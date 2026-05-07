@@ -137,6 +137,8 @@ it normally.
   Connection Lost screen in a new window.
 * If the backend sends an invalid message, opens the Backend Bug screen in a
   new window.
+* If the backend is outdated when the frontend is opened, opens the Restart
+  Backend screen in a new window.
 
 ## Sandboxes screen (normal mode)
 
@@ -846,13 +848,41 @@ displayed.
 | One or more data transfer jobs are running. Closing Sandbox Manager |
 | will interrupt them. Are you sure you want to do this?              |
 |                                                                     |
-|                                   <OK> <Cancel> <View Running Jobs> |
+|                                                       <OK> <Cancel> |
 +---------------------------------------------------------------------+
 ```
 
 * Clicking "OK" interrupts data transfer jobs and closes Sandbox Manager.
 * Clicking "Cancel" closes the window.
-* Clicking "View Running Jobs" opens the Running Jobs screen in a new window.
+
+## Restart Backend screen
+
+```
++--------------------------------------------------------------------+
+| Restart Backend - Sandbox Manager                            v ^ X |
++--------------------------------------------------------------------+
+| The sandbox manager backend has been updated, and must restart for |
+| updates to apply. Would you like to restart it now?                |
+|                                                                    |
+| WARNING: There are running sandboxes present. Restarting the       |
+| backend will forcibly close all applications running inside them   |
+| and will shut the sandboxes down.                                  |
+|                                                                    |
+| WARNING: There are running jobs present. Restarting the backend    |
+| will cancel all cancellable running jobs.                          |
+|                                                                    |
+|                                                   <Restart> <Skip> |
++--------------------------------------------------------------------+
+```
+
+* The running sandboxes warning is not displayed if there are no running
+  sandboxes.
+* The running jobs warning is not displayed if there are no running jobs.
+* Clicking "Restart" freezes the UI, tells the backend to restart itself, then
+  disconnects from the backend and attempts to reconnect.
+  * If reconnection succeeds, the UI unfreezes and the window closes.
+  * If reconnection fails, a Connection Lost screen opens in a new window.
+* Clicking "Skip" closes the window.
 
 ## Sandbox Already Running screen
 
@@ -1175,8 +1205,8 @@ displayed.
 | @ Connection Lost - Sandbox Manager                         v ^ X |
 +-------------------------------------------------------------------+
 | The connection to the backend was lost! This is possibly due to a |
-| bug in the Sandbox Manager frontend. Restart Sandbox Manager and  |
-| view the frontend and backend logs for more information.          |
+| bug. Restart Sandbox Manager and view the frontend and backend    |
+| logs for more information.                                        |
 |                                                                   |
 |                                                              <OK> |
 +-------------------------------------------------------------------+
@@ -1610,6 +1640,11 @@ interface directly.
       correlation ID. Takes no arguments. Does not include a binary blob.
       * Note - the correlation ID included with this message is garbage and
         will be ignored.
+    * `QUERY_NEED_RESTART` - Asks the backend if it needs to be restarted.
+      Introduces a new correlation ID. Takes no arguments. Does not include a
+      binary blob.
+    * `RESTART` - Tells the backend to restart itself. Introduces a new
+      correlation ID. Takes no arguments. Does not include a binary blob.
     * `CREATE_START` - Informs the backend that a series of messages are going
       to be sent that will define the configuration of a sandbox that should
       be newly created. Introduces a new correlation ID. Takes no arguments.
@@ -1698,6 +1733,22 @@ interface directly.
       the sandbox shell. Must be correlated to a `SHELL` message. Takes no
       arguments.  Includes a binary blob, the block of data.
   * Sent from server to client:
+    * `CONFIRM_NEED_RESTART` - Informs the frontend that the backend needs
+      restarted to apply pending software updates. Must be correlated to a
+      client-sent `QUERY_NEED_RESTART`. Takes no arguments. Does not include a
+      binary blob.
+      * Implementation note, the server should wait to sent
+        `CONFIRM_NEED_RESTART` until *after* it has sent information about the
+        the current state of sandboxes on the system. This will allow the
+        frontend to warn about the risk of shutting down running sandboxes and
+        interrupting running jobs.
+    * `DENY_NEED_RESTART` - Informs the frontend that the backend does not
+      need to be restarted. Must be correlated to a client-sent
+      `QUERY_NEED_RESTART` message. Takes no arguments. Does not include a
+      binary blob.
+    * `RESTART_ACK` - Informs the frontend that the restart request has been
+      accepted and is being processed. Must be correlated to a client-sent
+      `RESTART` message. Takes no arguments. Does not include a binary blob.
     * `DUP_NAME` - Informs the frontend that the requested sandbox name
       is the same as an existing sandbox name. Must be correlated to a
       client-sent `CREATE_END`, `CONFIG_END`, or `CLONE` message. Takes no

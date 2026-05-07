@@ -1,0 +1,23 @@
+# Copyright (C) 2026 - 2026 ENCRYPTED SUPPORT LLC <adrelanos@kicksecure.com>
+## See the file COPYING for copying conditions.
+
+Source: sandbox-manager-dist
+Section: admin
+Priority: optional
+Maintainer: Patrick Schleizer <adrelanos@kicksecure.com>
+Build-Depends: debhelper (>= 13), debhelper-compat (= 13), python3
+Homepage: https://www.kicksecure.com/wiki/Sandbox-app-launcher
+Vcs-Browser: https://github.com/Kicksecure/sandbox-manager-dist
+Vcs-Git: https://github.com/Kicksecure/sandbox-manager-dist.git
+Standards-Version: 4.7.2
+Rules-Requires-Root: no
+
+Package: sandbox-manager-dist
+Architecture: all
+Depends: mmdebstrap,
+         python3,
+         systemd-container,
+         ${misc:Depends}
+Description: Namespace-based environment isolation for Linux
+ Creates and manages per-use-case containers (sandboxes) for running
+ less-trusted code. Uses systemd-nspawn for containerization.
