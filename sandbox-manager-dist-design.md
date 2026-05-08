@@ -878,11 +878,29 @@ displayed.
 * The running sandboxes warning is not displayed if there are no running
   sandboxes.
 * The running jobs warning is not displayed if there are no running jobs.
-* Clicking "Restart" freezes the UI, tells the backend to restart itself, then
-  disconnects from the backend and attempts to reconnect.
-  * If reconnection succeeds, the UI unfreezes and the window closes.
-  * If reconnection fails, a Connection Lost screen opens in a new window.
+* Clicking "Restart" freezes the UI, and tells the backend to restart itself.
+  * If the backend accepts the request, the frontend disconnects from the
+    backend and attempts to reconnect.
+    * If reconnection succeeds, the UI unfreezes and the window closes.
+    * If reconnection fails, a Connection Lost screen opens in a new window.
+  * If the backend refuses the request, the UI unfreezes and a Restart Denied
+    screen opens in a new window.
 * Clicking "Skip" closes the window.
+
+## Restart Denied screen
+
+```
++---------------------------------------------------------------------+
+| Restart Denied - Sandbox Manager                              v ^ X |
++---------------------------------------------------------------------+
+| The sandbox manager backend refused to restart! This may be because |
+| other users on the system are actively running sandboxes.           |
+|                                                                     |
+|                                                                <OK> |
++---------------------------------------------------------------------+
+```
+
+* Clicking "OK" closes the window.
 
 ## Sandbox Already Running screen
 
@@ -1686,8 +1704,8 @@ interface directly.
     * `CREATE_FILE_BEGIN` - Tells the backend to create a file in a sandbox.
       Introduces a new correlation ID. Takes five arguments; the UUID of the
       sandbox to write a file into, the owning user, the owning group, the
-      file permissions (as an octal string), and the path to save the file at.
-      Does not include a binary blob.
+      file permissions (as an octal string), and the absolute path to save the
+      file at. Does not include a binary blob.
     * `CREATE_FILE_BLOCK` - Sends the backend a block of a file being written.
       Must be correlated to a `CREATE_FILE_BEGIN` message. Takes no arguments.
       Includes a binary blob, the block of data to write to the file.
@@ -1696,9 +1714,9 @@ interface directly.
       Takes no arguments. Does not include a binary blob.
     * `CREATE_DIR` - Tells the backend to create a directory in a sandbox.
       Introduces a new correlation ID. Takes five arguments; the UUID of the
-      sandbox to create a directory in, the owning user, the owning group, and
-      the directory permissions (as an octal string), and the path to create
-      the directory at. Does not include a binary blob.
+      sandbox to create a directory in, the owning user, the owning group, the
+      directory permissions (as an octal string), and the path to create the
+      directory at. Does not include a binary blob.
     * `LIST_DIR` - Tells the backend to send back a listing of all file system
       objects in the specified directory. Introduces a new correlation ID.
       Takes two arguments; the UUID of the sandbox to get a listing from, and
@@ -1720,10 +1738,10 @@ interface directly.
       name of the desktop file containing the application definition in the
       sandbox. Does not include a binary blob.
     * `EXEC` - Tells the backend to launch an application in the sandbox.
-      Introduces a new correlation ID. Takes one argument; the UUID of the
-      sandbox to launch an application within. Includes a binary blob, a
-      NULL-separated list of strings. The first string is the program to
-      execute, the subsequent strings are the arguments to pass to it.
+      Introduces a new correlation ID. Takes two arguments; the UUID of the
+      sandbox to launch an application within, and the (absolute or relative)
+      path to the program.  Includes a binary blob, a list of NULL-terminated
+      arguments to pass to the program.
     * `SHELL` - Tells the backend to connect the frontend to the sandbox's
       console. Raw, unsanitized bytes will be piped between the sandbox and
       the frontend, it is the frontend's responsibility to do any necessary
@@ -1746,9 +1764,13 @@ interface directly.
       need to be restarted. Must be correlated to a client-sent
       `QUERY_NEED_RESTART` message. Takes no arguments. Does not include a
       binary blob.
-    * `RESTART_ACK` - Informs the frontend that the restart request has been
-      accepted and is being processed. Must be correlated to a client-sent
-      `RESTART` message. Takes no arguments. Does not include a binary blob.
+    * `RESTART_INPROGRESS` - Informs the frontend that the restart request has
+      been accepted and is being processed. Broadcast to all clients whether
+      long-lived or not. Must be correlated to a client-sent `RESTART` message.
+      Takes no arguments. Does not include a binary blob.
+    * `RESTART_DENIED` - Informs the frontend that the restart request has
+      been rejected. Must be correlated to a client-sent `RESTART` message.
+      Takes no arguments. Does not include a binary blob.
     * `DUP_NAME` - Informs the frontend that the requested sandbox name
       is the same as an existing sandbox name. Must be correlated to a
       client-sent `CREATE_END`, `CONFIG_END`, or `CLONE` message. Takes no
@@ -1763,7 +1785,7 @@ interface directly.
       `EXEC`, or `SHELL` message.
     * `SANDBOX_MISSING` - Informs the frontend that a sandbox cannot be found.
       Must be correlated to a client-sent message that refers to an existing
-      sandbox (there are too many of these to iterate easily here). Takes no
+      sandbox (there are too many of these to enumerate easily here). Takes no
       arguments. Does not include a binary blob.
     * `CONFIG_INVALID` - Informs the frontend that the configuration
       information it sent when configuring a sandbox was invalid for some
@@ -1781,8 +1803,12 @@ interface directly.
       request has been accepted and is being processed. Broadcast to
       long-lived clients. Must be correlated to a client-sent `CREATE_END`
       message when sent to the provoking client, introduces a new correlation
-      ID otherwise. Takes two arguments; the UUID of the new sandbox, and the
-      name of the new sandbox. Does not include a binary blob.
+      ID otherwise. Takes one argument; the UUID of the new sandbox. Does not
+      include a binary blob.
+      * Implementation note, after sending this, but before sending one of
+        `CREATE_SUCCESS` or `CREATE_FAILED`, the backend must send
+        `CONFIG_INFO_START`, the config info of the new sandbox, and
+        `CONFIG_INFO_END`.
     * `CREATE_SUCCESS` - Informs the frontend that a sandbox has been
       successfully created. Broadcast to long-lived clients. Must be
       correlated to a `CREATE_INPROGRESS` message. Takes no arguments. Does
@@ -1798,6 +1824,10 @@ interface directly.
       provoking client, introduces a new correlation ID otherwise. Takes one
       argument; the UUID of the sandbox being configured. Does not include a
       binary blob.
+      * Implementation note, after sending this, but before sending one of
+        `CONFIG_SUCCESS` or `CONFIG_FAILED`, the backend must send
+        `CONFIG_INFO_START`, the new config info of the sandbox, and
+        `CONFIG_INFO_END`.
     * `CONFIG_SUCCESS` - Informs the frontend that a sandbox has been
       successfully reconfigured. Broadcast to long-lived clients. Must be
       correlated to a `CONFIG_INPROGRESS` message. Takes no arguments. Does
@@ -1808,7 +1838,8 @@ interface directly.
       binary blob.
     * `CONFIG_INFO_START` - Informs the frontend that messages defining a
       sandbox's configuration are about to be sent. Broadcast to long-lived
-      clients. Must be correlated to a `CREATE_INPROGRESS`,
+      clients if correlated to a `CREATE_INPROGRESS` or `CONFIG_INPROGRESS`
+      message. Must be correlated to a `CREATE_INPROGRESS`,
       `CONFIG_INPROGRESS`, or client-sent `GET_CONFIG` message. Takes no
       arguments. Does not include a binary blob.
     * `CONFIG_INFO_END` - Informs the frontend that it is done sending
@@ -1828,11 +1859,11 @@ interface directly.
     * `DELETE_FAILED` - Informs the frontend that attempting to delete a
       sandbox has failed. Must be correlated to a `DELETE_INPROGRESS` message.
       Takes no arguments. Does not include a binary blob.
-    * `CLONE_ACK` - Informs the frontend that the sandbox clone request has
-      been accepted and is being processed. Broadcast to long-lived clients.
-      Must be correlated to a client-sent `CLONE` message when sent to the
-      provoking client, introduces a new correlation ID otherwise. Takes three
-      arguments; the UUID of the source sandbox, the UUID of the cloned
+    * `CLONE_INPROGRESS` - Informs the frontend that the sandbox clone request
+      has been accepted and is being processed. Broadcast to long-lived
+      clients.  Must be correlated to a client-sent `CLONE` message when sent
+      to the provoking client, introduces a new correlation ID otherwise. Takes
+      three arguments; the UUID of the source sandbox, the UUID of the cloned
       sandbox, and the name of the cloned sandbox. Does not include a binary
       blob.
       * The reason for all the arguments is that a long-running client should
@@ -1842,11 +1873,12 @@ interface directly.
         that way.
     * `CLONE_SUCCESS` - Informs the frontend that a sandbox has been
       successfully cloned. Broadcast to long-lived clients. Must be correlated
-      to a `CLONE_ACK` message. Takes no arguments. Does not include a binary
-      blob.
+      to a `CLONE_INPROGRESS` message. Takes no arguments. Does not include a
+      binary blob.
     * `CLONE_FAILED` - Informs the frontend that a sandbox could not be
       cloned. Broadcast to long-lived clients. Must be correlated to a
-      `CLONE_ACK` message. Takes no arguments. Does not include a binary blob.
+      `CLONE_INPROGRESS` message. Takes no arguments. Does not include a binary
+      blob.
     * `BOOT_INPROGRESS` - Informs the frontend that the boot request has been
       accepted and is being processed. Broadcast to long-lived clients. Must
       be correlated to a client-sent `BOOT` message when sent to the provoking
@@ -1877,17 +1909,18 @@ interface directly.
       has been accepted and the backend is ready to receive file data. Must be
       correlated to a client-sent `CREATE_FILE_BEGIN` message. Takes no
       arguments. Does not include a binary blob.
-    * `CREATE_FILE_DIED` - Informs the frontend that the file creation
-      operation died. Must be correlated to a `CREATE_FILE_ACK` message. Takes
-      no arguments. Includes a binary blob, an error message to display to the
-      end-user. This error message is untrusted and **MUST** be sanitized by
-      the frontend before displaying it.
-      * The error message is untrusted because sandbox-manager-dist uses a
-        sandbox-side agent to handle part of file transfer, and malware make
-        take over that agent and make it sent a malicious error message.
     * `CREATE_FILE_SUCCESS` - Informs the frontend that the file was
       successfully created. Must be correlated to a `CREATE_FILE_ACK` message.
       Takes no arguments. Does not include a binary blob.
+    * `CREATE_FILE_FAILED` - Informs the frontend that the file creation
+      operation failed, either immediately or midway through. Must be
+      correlated to a `CREATE_FILE_ACK` or client-sent `CREATE_FILE_BEGIN`
+      message. Takes no arguments. Includes a binary blob, an error message to
+      display to the end-user. This error message is untrusted and **MUST** be
+      sanitized by the frontend before displaying it.
+      * The error message is untrusted because sandbox-manager-dist uses a
+        sandbox-side agent to handle part of file transfer, and malware make
+        take over that agent and make it sent a malicious error message.
     * `CREATE_DIR_SUCCESS` - Informs the frontend that the directory was
       successfully created. Must be correlated to a client-sent `CREATE_DIR`
       message. Takes no arguments. Does not include a binary blob.
@@ -1896,23 +1929,24 @@ interface directly.
       Takes no arguments. Includes a binary blob, an error message to display
       to the end-user. This error message is untrusted and **MUST** be
       sanitized by the frontend before displaying it.
-      * See `CREATE_FILE_DIED` above.
+      * See `CREATE_FILE_FAILED`  above.
     * `LIST_DIR_START` - Informs the frontend that messages defining a
       directory's metadata and its directory listing are about to be sent.
       Must be correlated to a client-sent `LIST_DIR` message. Takes no
       arguments. Does not include a binary blob.
     * `LIST_DIR_ENTRY` - Defines one entry in a directory listing. Must be
-      correlated to a `LIST_DIR_START` message. Takes four arguments; an "f"
+      correlated to a `LIST_DIR_START` message. Takes five arguments; an "f"
       or "d" depending on whether the entry is for a file or a directory, the
-      object's owning user, the object's owning group, and the object's
-      permissions (as an octal string). Includes a binary blob, the name of the
-      object.
+      object's owning user, the object's owning group, the object's permissions
+      (as an octal string), and the name of the object. Does not include a
+      binary blob.
     * `LIST_DIR_END` - Informs the frontend that it is done sending messages
       defining a directory listing. Must be correlated to a `LIST_DIR_START`
       message. Takes no arguments. Does not include a binary blob.
-    * `LIST_DIR_FAILED` - Informs the frontend that the directory could not be
-      listed. Must be correlated to a client-sent `LIST_DIR` message. Takes no
-      arguments. Does not include a binary blob.
+    * `LIST_DIR_FAILED` - Informs the frontend that listing a directory failed,
+      either immediately or mid-way through. Must be correlated to a
+      `LIST_DIR_START` or client-sent `LIST_DIR` message. Takes no arguments.
+      Does not include a binary blob.
     * `READ_FILE_START` - Informs the frontend that the backend is about to
       send a file to it. Must be correlated to a client-sent `READ_FILE`
       message. Takes three arguments; the file's owning user, owning group,
@@ -1928,29 +1962,30 @@ interface directly.
       message has been accepted and it should not expect a `READ_FILE_END`
       message. Must be correlated to a client-sent `READ_FILE_ABORT` message.
       Takes no arguments. Does not include a binary blob.
-    * `READ_FILE_DIED` - Informs the frontend that the file read operation
-      died. Must be correlated to a `READ_FILE_START` message. Takes no
+    * `READ_FILE_FAILED` - Informs the frontend that the file read operation
+      failed, either immediately or midway through. Must be correlated to a
+      `READ_FILE_START` or client-sent `READ_FILE` message. Takes no
       arguments. Includes a binary blob, an error message to display to the
       end-user.  This error message is untrusted and **MUST** be sanitized by
       the frontend before displaying it.
-      * See `CREATE_FILE_DIED` above.
+      * See `CREATE_FILE_FAILED` above.
     * `LIST_APPS_START` - Informs the frontend that an application list is
       about to be sent. Must be correlated to a client-sent `LIST_APPS`
       message. Takes no arguments. Does not include a binary blob.
     * `LIST_APPS_ENTRY` - Defines an application in a sandbox. Must be
-      correlated to a  `LIST_APPS_START` message. Takes no arguments. Includes
-      a binary blob, containing three NULL-terminated strings. The first one
-      is the application category, the second one is the application name, the
-      third one is the name of the desktop file defining the application.
+      correlated to a `LIST_APPS_START` message. Takes three arguments; the
+      application category, the application name, and the name of the desktop
+      file defining the application. Does not include a binary blob.
     * `LIST_APPS_END` - Informs the frontend that an application list has been
       sent. Must be correlated to a `LIST_APPS_START` message. Takes no
       arguments. Does not include a binary blob.
-    * `LIST_APPS_DIED` - Informs the frontend that the app listing operation
-      died. Must be correlated to a `LIST_APPS_START` message. Takes no
-      arguments. Includes a binary blob, an error message to display to the
-      end-user. This error message is untrusted and **MUST** be sanitized by
-      the frontend before displaying it.
-      * See `CREATE_FILE_DIED` above.
+    * `LIST_APPS_FAILED` - Informs the frontend that the app listing operation
+      failed, either immediately or midway through. Must be correlated to a
+      `LIST_APPS_START` or client-sent `LIST_APPS` message. Takes no arguments.
+      Includes a binary blob, an error message to display to the end-user. This
+      error message is untrusted and **MUST** be sanitized by the frontend
+      before displaying it.
+      * See `CREATE_FILE_FAILED` above.
     * `GET_APP_INFO_START` - Informs the frontend that messages defining an
       application's info are about to be sent. Must be correlated to a
       client-sent `GET_APP_INFO` message. Takes no arguments. Does not include
@@ -1983,8 +2018,9 @@ interface directly.
     * `GET_APP_INFO_END` - Informs the frontend that application info is done
       being sent.  Must be correlated to a `GET_APP_INFO_START` message. Takes
       no arguments. Does not include a binary blob.
-    * `GET_APP_INFO_DIED` - Informs the frontend that the application info
-      fetch operation died.  Must be correlated to a `GET_APP_INFO_START`
+    * `GET_APP_INFO_FAILED` - Informs the frontend that the application info
+      fetch operation failed, either immediately or mid-way through.  Must be
+      correlated to a `GET_APP_INFO_START` or client-sent `GET_APP_INFO`
       message. Takes no arguments. Does not include a binary blob.
     * `EXEC_SUCCESS` - Informs the frontend that executing an application has
       succeeded. Must be correlated to a client-sent `EXEC` message. Takes no
@@ -2069,7 +2105,7 @@ interface directly.
     * `FSO_MISSING`
     * `FSO_EXISTS`
     * `CREATE_FILE_ACK`
-    * `CREATE_FILE_DIED`
+    * `CREATE_FILE_FAILED`
     * `CREATE_FILE_SUCCESS`
     * `CREATE_DIR_SUCCESS`
     * `CREATE_DIR_FAILED`
@@ -2081,11 +2117,11 @@ interface directly.
     * `READ_FILE_BLOCK`
     * `READ_FILE_END`
     * `READ_FILE_ABORT_ACK`
-    * `READ_FILE_DIED`
+    * `READ_FILE_FAILED`
     * `LIST_APPS_START`
     * `LIST_APPS_ENTRY`
     * `LIST_APPS_END`
-    * `LIST_APPS_DIED`
+    * `LIST_APPS_FAILED`
     * `GET_APP_INFO_START`
     * `APP_INFO_NAME`
     * `APP_INFO_DESCRIPTION`
@@ -2096,7 +2132,7 @@ interface directly.
     * `APP_INFO_WORK_DIR`
     * `APP_INFO_MIMETYPE`
     * `GET_APP_INFO_END`
-    * `GET_APP_INFO_DIED`
+    * `GET_APP_INFO_FAILED`
     * `EXEC_SUCCESS`
     * `EXEC_FAILED`
 
