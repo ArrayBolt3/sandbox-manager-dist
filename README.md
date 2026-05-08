@@ -15,7 +15,7 @@ concepts it implements, can be seen here:
 https://forums.kicksecure.com/t/separate-some-user-applications-from-the-operating-system/1120
 
 A far more detailed design document is present
-[in this repo](sandbox-manager-dist.design.md).
+[in this repo](sandbox-manager-dist-design.md).
 
 ## Testing
 
