@@ -6,38 +6,37 @@
 # pylint: disable=too-many-lines
 
 """
-protocol.py - Defines protocol messages used for communication between the
-frontend, backend, and agent.
+protocol.py - Defines the IPC protocol used for communication between the
+frontend, backend, and agent, and provides tools for using that protocol
+easily.
 """
 
-from typing import ClassVar, Final
+import os
+import socket
+import stat
+import pwd
+from pathlib import Path
+from typing import ClassVar
 from .common import (
     SmdValidateType,
+    SmdSocketType,
     SmdCommon,
 )
 
 msg_inc_int: int = 0
+max_vol_size: int = (16 * 1024 * 1024 * 1024 * 1024) - 4096
+max_mem_size: int = 1024 * 1024 * 1024 * 1024
 
-def next_msg_code() -> int:
-    """
-    Generates a new message code. We use this instead of explicitly setting
-    message codes to avoid accidentally assigning the same code to two messages.
-    """
-
-    # pylint: disable=global-statement
-    global msg_inc_int
-    msg_inc_int += 1
-    return msg_inc_int
-
-########################
-# CORE MESSAGE CLASSES #
-########################
+######################
+# CORE MESSAGE LOGIC #
+######################
 
 class SmdBaseMsg:
     """
-    Base class for all message classes.
+    Base class for all message classes. Also stores a lookup list for all
     """
 
+    registry: list[type["SmdBaseMsg"]] = []
     name: ClassVar[str]
     msg_code: ClassVar[int]
     arg_count: ClassVar[int]
@@ -60,6 +59,28 @@ class SmdBaseMsg:
             binary_blob if binary_blob is not None else b""
         )
         self.validate_msg_params()
+
+    def __init_subclass__(
+        cls,
+        *,
+        name: str | None = None,
+        arg_count: int | None = None,
+        trailing_binary: bool | None = None,
+        register: bool = True,
+    ) -> None:
+        """
+        Class derivation function.
+        """
+
+        if name is not None:
+            cls.name = name
+        if arg_count is not None:
+            cls.arg_count = arg_count
+        if trailing_binary is not None:
+            cls.trailing_binary = trailing_binary
+        if register:
+            cls.msg_code = len(SmdBaseMsg.registry)
+            SmdBaseMsg.registry.append(cls)
 
     def serialize(self) -> bytes:
         """
@@ -118,27 +139,27 @@ class SmdBaseMsg:
                 f"Binary blob provided to {self.name} but was not expected"
             )
 
-class SmdControlClientMsg(SmdBaseMsg):
+class SmdControlClientMsg(SmdBaseMsg, register=False):
     """
     No-op class that groups together client-to-server control messages.
     """
 
-class SmdControlServerMsg(SmdBaseMsg):
+class SmdControlServerMsg(SmdBaseMsg, register = False):
     """
     No-op class that groups together server-to-client control messages.
     """
 
-class SmdCommClientMsg(SmdBaseMsg):
+class SmdCommClientMsg(SmdBaseMsg, register = False):
     """
     No-op class that groups together client-to-server comm messages.
     """
 
-class SmdCommServerMsg(SmdBaseMsg):
+class SmdCommServerMsg(SmdBaseMsg, register = False):
     """
     No-op class that groups together server-to-client comm messages.
     """
 
-class SmdCommBidiMsg(SmdBaseMsg):
+class SmdCommBidiMsg(SmdBaseMsg, register = False):
     """
     No-op class that groups together messages that may be sent from server to
     client or from client to server.
@@ -148,15 +169,15 @@ class SmdCommBidiMsg(SmdBaseMsg):
 # CONTROL CLIENT MESSAGES #
 ###########################
 
-class SmdControlClientRegisterMsg(SmdControlClientMsg):
+class SmdControlClientRegisterMsg(
+    SmdControlClientMsg,
+    name="REGISTER",
+    arg_count=1,
+    trailing_binary=False,
+):
     """
     Requests creation of a comm socket for a specified user.
     """
-
-    name: ClassVar[Final[str]] = "REGISTER"
-    msg_code: ClassVar[Final[int]] = next_msg_code()
-    arg_count: ClassVar[Final[int]] = 1
-    trailing_binary: ClassVar[Final[bool]] = False
 
     def __init__(
         self,
@@ -176,15 +197,15 @@ class SmdControlClientRegisterMsg(SmdControlClientMsg):
             "User ID failed validation",
         )
 
-class SmdControlClientUnregisterMsg(SmdControlClientMsg):
+class SmdControlClientUnregisterMsg(
+    SmdControlClientMsg,
+    name="UNREGISTER",
+    arg_count=1,
+    trailing_binary=False,
+):
     """
     Requests removal of a comm socket for a specified user.
     """
-
-    name: ClassVar[Final[str]] = "UNREGISTER"
-    msg_code: ClassVar[Final[int]] = next_msg_code()
-    arg_count: ClassVar[Final[int]] = 1
-    trailing_binary: ClassVar[Final[bool]] = False
 
     def __init__(
         self,
@@ -208,132 +229,132 @@ class SmdControlClientUnregisterMsg(SmdControlClientMsg):
 # CONTROL SERVER MESSAGES #
 ###########################
 
-class SmdControlServerRegisterSuccessMsg(SmdControlServerMsg):
+class SmdControlServerRegisterSuccessMsg(
+    SmdControlServerMsg,
+    name="REGISTER_SUCCESS",
+    arg_count=0,
+    trailing_binary=False,
+):
     """
     Informs the client that comm socket creation has succeeded.
     """
 
-    name: ClassVar[Final[str]] = "REGISTER_SUCCESS"
-    msg_code: ClassVar[Final[int]] = next_msg_code()
-    arg_count: ClassVar[Final[int]] = 0
-    trailing_binary: ClassVar[Final[bool]] = False
-
-class SmdControlServerRegisterExistsMsg(SmdControlServerMsg):
+class SmdControlServerRegisterExistsMsg(
+    SmdControlServerMsg,
+    name="REGISTER_EXISTS",
+    arg_count=0,
+    trailing_binary=False,
+):
     """
     Informs the client that the comm socket already exists.
     """
 
-    name: ClassVar[Final[str]] = "REGISTER_EXISTS"
-    msg_code: ClassVar[Final[int]] = next_msg_code()
-    arg_count: ClassVar[Final[int]] = 0
-    trailing_binary: ClassVar[Final[bool]] = False
-
-class SmdControlServerRegisterFailureMsg(SmdControlServerMsg):
+class SmdControlServerRegisterFailureMsg(
+    SmdControlServerMsg,
+    name="REGISTER_FAILURE",
+    arg_count=0,
+    trailing_binary=False,
+):
     """
     Informs the client that the comm socket could not be created.
     """
 
-    name: ClassVar[Final[str]] = "REGISTER_FAILURE"
-    msg_code: ClassVar[Final[int]] = next_msg_code()
-    arg_count: ClassVar[Final[int]] = 0
-    trailing_binary: ClassVar[Final[bool]] = False
-
-class SmdControlServerUnregisterSuccessMsg(SmdControlServerMsg):
+class SmdControlServerUnregisterSuccessMsg(
+    SmdControlServerMsg,
+    name="UNREGISTER_SUCCESS",
+    arg_count=0,
+    trailing_binary=False,
+):
     """
     Informs the client that comm socket removal has succeeded.
     """
 
-    name: ClassVar[Final[str]] = "UNREGISTER_SUCCESS"
-    msg_code: ClassVar[Final[int]] = next_msg_code()
-    arg_count: ClassVar[Final[int]] = 0
-    trailing_binary: ClassVar[Final[bool]] = False
-
-class SmdControlServerUnregisterAbsentMsg(SmdControlServerMsg):
+class SmdControlServerUnregisterAbsentMsg(
+    SmdControlServerMsg,
+    name="UNREGISTER_ABSENT",
+    arg_count=0,
+    trailing_binary=False,
+):
     """
     Informs the client that the comm socket does not exist.
     """
 
-    name: ClassVar[Final[str]] = "UNREGISTER_ABSENT"
-    msg_code: ClassVar[Final[int]] = next_msg_code()
-    arg_count: ClassVar[Final[int]] = 0
-    trailing_binary: ClassVar[Final[bool]] = False
-
-class SmdControlServerUnregisterFailureMsg(SmdControlServerMsg):
+class SmdControlServerUnregisterFailureMsg(
+    SmdControlServerMsg,
+    name="UNREGISTER_FAILURE",
+    arg_count=0,
+    trailing_binary=False,
+):
     """
     Informs the client that the comm socket could not be removed.
     """
-
-    name: ClassVar[Final[str]] = "UNREGISTER_FAILURE"
-    msg_code: ClassVar[Final[int]] = next_msg_code()
-    arg_count: ClassVar[Final[int]] = 0
-    trailing_binary: ClassVar[Final[bool]] = False
 
 ########################
 # COMM CLIENT MESSAGES #
 ########################
 
-class SmdCommClientSyncMsg(SmdCommClientMsg):
+class SmdCommClientSyncMsg(
+    SmdCommClientMsg,
+    name="SYNC",
+    arg_count=0,
+    trailing_binary=False,
+):
     """
     Informs the server that the client is long-lived.
     """
 
-    name: ClassVar[Final[str]] = "SYNC"
-    msg_code: ClassVar[Final[int]] = next_msg_code()
-    arg_count: ClassVar[Final[int]] = 0
-    trailing_binary: ClassVar[Final[bool]] = False
-
-class SmdCommClientQueryNeedRestartMsg(SmdCommClientMsg):
+class SmdCommClientQueryNeedRestartMsg(
+    SmdCommClientMsg,
+    name="QUERY_NEED_RESTART",
+    arg_count=0,
+    trailing_binary=False,
+):
     """
     Asks the server if it needs to be restarted to apply software updates.
     """
 
-    name: ClassVar[Final[str]] = "QUERY_NEED_RESTART"
-    msg_code: ClassVar[Final[int]] = next_msg_code()
-    arg_count: ClassVar[Final[int]] = 0
-    trailing_binary: ClassVar[Final[bool]] = False
-
-class SmdCommClientRestartMsg(SmdCommClientMsg):
+class SmdCommClientRestartMsg(
+    SmdCommClientMsg,
+    name="RESTART",
+    arg_count=0,
+    trailing_binary=False,
+):
     """
     Asks the server to restart itself.
     """
 
-    name: ClassVar[Final[str]] = "RESTART"
-    msg_code: ClassVar[Final[int]] = next_msg_code()
-    arg_count: ClassVar[Final[int]] = 0
-    trailing_binary: ClassVar[Final[bool]] = False
-
-class SmdCommClientCreateStartMsg(SmdCommClientMsg):
+class SmdCommClientCreateStartMsg(
+    SmdCommClientMsg,
+    name="CREATE_START",
+    arg_count=0,
+    trailing_binary=False,
+):
     """
     Informs the server that messages defining a new sandbox are about to be
     sent.
     """
 
-    name: ClassVar[Final[str]] = "CREATE_START"
-    msg_code: ClassVar[Final[int]] = next_msg_code()
-    arg_count: ClassVar[Final[int]] = 0
-    trailing_binary: ClassVar[Final[bool]] = False
-
-class SmdCommClientCreateEndMsg(SmdCommClientMsg):
+class SmdCommClientCreateEndMsg(
+    SmdCommClientMsg,
+    name="CREATE_END",
+    arg_count=0,
+    trailing_binary=False,
+):
     """
     Informs the server that messages defining a new sandbox have been set and
     asks the backend to create the sandbox.
     """
 
-    name: ClassVar[Final[str]] = "CREATE_END"
-    msg_code: ClassVar[Final[int]] = next_msg_code()
-    arg_count: ClassVar[Final[int]] = 0
-    trailing_binary: ClassVar[Final[bool]] = False
-
-class SmdCommClientConfigStartMsg(SmdCommClientMsg):
+class SmdCommClientConfigStartMsg(
+    SmdCommClientMsg,
+    name="CONFIG_START",
+    arg_count=1,
+    trailing_binary=False,
+):
     """
     Informs the server that messages modifying the configuration of a sandbox
     are about to be sent.
     """
-
-    name: ClassVar[Final[str]] = "CONFIG_START"
-    msg_code: ClassVar[Final[int]] = next_msg_code()
-    arg_count: ClassVar[Final[int]] = 1
-    trailing_binary: ClassVar[Final[bool]] = False
 
     def __init__(
         self,
@@ -353,27 +374,27 @@ class SmdCommClientConfigStartMsg(SmdCommClientMsg):
             "Sandbox UUID failed validation",
         )
 
-class SmdCommClientConfigEndMsg(SmdCommClientMsg):
+class SmdCommClientConfigEndMsg(
+    SmdCommClientMsg,
+    name="CONFIG_END",
+    arg_count=1,
+    trailing_binary=False,
+):
     """
     Informs the server that messages modifying the configuration of a sandbox
     have been sent and asks the backend to reconfigure the sandbox.
     """
 
-    name: ClassVar[Final[str]] = "CONFIG_END"
-    msg_code: ClassVar[Final[int]] = next_msg_code()
-    arg_count: ClassVar[Final[int]] = 1
-    trailing_binary: ClassVar[Final[bool]] = False
-
-class SmdCommClientGetConfigMsg(SmdCommClientMsg):
+class SmdCommClientGetConfigMsg(
+    SmdCommClientMsg,
+    name="GET_CONFIG",
+    arg_count=1,
+    trailing_binary=False,
+):
     """
     Asks the server to send the configuration details of the specified
     sandbox.
     """
-
-    name: ClassVar[Final[str]] = "GET_CONFIG"
-    msg_code: ClassVar[Final[int]] = next_msg_code()
-    arg_count: ClassVar[Final[int]] = 1
-    trailing_binary: ClassVar[Final[bool]] = False
 
     def __init__(
         self,
@@ -393,15 +414,15 @@ class SmdCommClientGetConfigMsg(SmdCommClientMsg):
             "Sandbox UUID failed validation",
         )
 
-class SmdCommClientDeleteMsg(SmdCommClientMsg):
+class SmdCommClientDeleteMsg(
+    SmdCommClientMsg,
+    name="DELETE",
+    arg_count=1,
+    trailing_binary=False,
+):
     """
     Tells the server to delete a sandbox.
     """
-
-    name: ClassVar[Final[str]] = "DELETE"
-    msg_code: ClassVar[Final[int]] = next_msg_code()
-    arg_count: ClassVar[Final[int]] = 1
-    trailing_binary: ClassVar[Final[bool]] = False
 
     def __init__(
         self,
@@ -421,15 +442,15 @@ class SmdCommClientDeleteMsg(SmdCommClientMsg):
             "Sandbox UUID failed validation",
         )
 
-class SmdCommClientCloneMsg(SmdCommClientMsg):
+class SmdCommClientCloneMsg(
+    SmdCommClientMsg,
+    name="CLONE",
+    arg_count=2,
+    trailing_binary=False,
+):
     """
     Tells the server to clone a sandbox.
     """
-
-    name: ClassVar[Final[str]] = "CLONE"
-    msg_code: ClassVar[Final[int]] = next_msg_code()
-    arg_count: ClassVar[Final[int]] = 2
-    trailing_binary: ClassVar[Final[bool]] = False
 
     def __init__(
         self,
@@ -454,15 +475,15 @@ class SmdCommClientCloneMsg(SmdCommClientMsg):
             "New sandbox name failed validation",
         )
 
-class SmdCommClientBootMsg(SmdCommClientMsg):
+class SmdCommClientBootMsg(
+    SmdCommClientMsg,
+    name="BOOT",
+    arg_count=2,
+    trailing_binary=False,
+):
     """
     Tells the server to boot a sandbox.
     """
-
-    name: ClassVar[Final[str]] = "BOOT"
-    msg_code: ClassVar[Final[int]] = next_msg_code()
-    arg_count: ClassVar[Final[int]] = 2
-    trailing_binary: ClassVar[Final[bool]] = False
 
     def __init__(
         self,
@@ -487,15 +508,15 @@ class SmdCommClientBootMsg(SmdCommClientMsg):
             "Boot mode failed validation",
         )
 
-class SmdCommClientShutdownMsg(SmdCommClientMsg):
+class SmdCommClientShutdownMsg(
+    SmdCommClientMsg,
+    name="SHUTDOWN",
+    arg_count=2,
+    trailing_binary=False,
+):
     """
     Tells the server to shut down a sandbox.
     """
-
-    name: ClassVar[Final[str]] = "SHUTDOWN"
-    msg_code: ClassVar[Final[int]] = next_msg_code()
-    arg_count: ClassVar[Final[int]] = 2
-    trailing_binary: ClassVar[Final[bool]] = False
 
     def __init__(
         self,
@@ -520,15 +541,15 @@ class SmdCommClientShutdownMsg(SmdCommClientMsg):
             "Shutdown mode failed validation",
         )
 
-class SmdCommClientCreateFileBeginMsg(SmdCommClientMsg):
+class SmdCommClientCreateFileBeginMsg(
+    SmdCommClientMsg,
+    name="CREATE_FILE_BEGIN",
+    arg_count=5,
+    trailing_binary=False,
+):
     """
     Tells the backend to create a file in a sandbox.
     """
-
-    name: ClassVar[Final[str]] = "CREATE_FILE_BEGIN"
-    msg_code: ClassVar[Final[int]] = next_msg_code()
-    arg_count: ClassVar[Final[int]] = 5
-    trailing_binary: ClassVar[Final[bool]] = False
 
     def __init__(
         self,
@@ -568,35 +589,35 @@ class SmdCommClientCreateFileBeginMsg(SmdCommClientMsg):
             "File path failed validation",
         )
 
-class SmdCommClientCreateFileBlockMsg(SmdCommClientMsg):
+class SmdCommClientCreateFileBlockMsg(
+    SmdCommClientMsg,
+    name="CREATE_FILE_BLOCK",
+    arg_count=0,
+    trailing_binary=True,
+):
     """
     Sends a block of a file being created to the server.
     """
 
-    name: ClassVar[Final[str]] = "CREATE_FILE_BLOCK"
-    msg_code: ClassVar[Final[int]] = next_msg_code()
-    arg_count: ClassVar[Final[int]] = 0
-    trailing_binary: ClassVar[Final[bool]] = True
-
-class SmdCommClientCreateFileEndMsg(SmdCommClientMsg):
+class SmdCommClientCreateFileEndMsg(
+    SmdCommClientMsg,
+    name="CREATE_FILE_END",
+    arg_count=0,
+    trailing_binary=False,
+):
     """
     Tells the server that all blocks of a file being created have been sent.
     """
 
-    name: ClassVar[Final[str]] = "CREATE_FILE_END"
-    msg_code: ClassVar[Final[int]] = next_msg_code()
-    arg_count: ClassVar[Final[int]] = 0
-    trailing_binary: ClassVar[Final[bool]] = False
-
-class SmdCommClientCreateDirMsg(SmdCommClientMsg):
+class SmdCommClientCreateDirMsg(
+    SmdCommClientMsg,
+    name="CREATE_DIR",
+    arg_count=5,
+    trailing_binary=False,
+):
     """
     Tells the backend to create a directory in a sandbox.
     """
-
-    name: ClassVar[Final[str]] = "CREATE_DIR"
-    msg_code: ClassVar[Final[int]] = next_msg_code()
-    arg_count: ClassVar[Final[int]] = 5
-    trailing_binary: ClassVar[Final[bool]] = False
 
     def __init__(
         self,
@@ -636,15 +657,15 @@ class SmdCommClientCreateDirMsg(SmdCommClientMsg):
             "Directory path failed validation",
         )
 
-class SmdCommClientListDirMsg(SmdCommClientMsg):
+class SmdCommClientListDirMsg(
+    SmdCommClientMsg,
+    name="LIST_DIR",
+    arg_count=2,
+    trailing_binary=False,
+):
     """
     Tells the backend to send a directory listing to the client.
     """
-
-    name: ClassVar[Final[str]] = "LIST_DIR"
-    msg_code: ClassVar[Final[int]] = next_msg_code()
-    arg_count: ClassVar[Final[int]] = 2
-    trailing_binary: ClassVar[Final[bool]] = False
 
     def __init__(
         self,
@@ -669,15 +690,15 @@ class SmdCommClientListDirMsg(SmdCommClientMsg):
             "Directory path failed validation",
         )
 
-class SmdCommClientReadFileMsg(SmdCommClientMsg):
+class SmdCommClientReadFileMsg(
+    SmdCommClientMsg,
+    name="READ_FILE",
+    arg_count=2,
+    trailing_binary=False,
+):
     """
     Tells the backend to send a file to the client.
     """
-
-    name: ClassVar[Final[str]] = "READ_FILE"
-    msg_code: ClassVar[Final[int]] = next_msg_code()
-    arg_count: ClassVar[Final[int]] = 2
-    trailing_binary: ClassVar[Final[bool]] = False
 
     def __init__(
         self,
@@ -702,25 +723,25 @@ class SmdCommClientReadFileMsg(SmdCommClientMsg):
             "File path failed validation",
         )
 
-class SmdCommClientReadFileAbortMsg(SmdCommClientMsg):
+class SmdCommClientReadFileAbortMsg(
+    SmdCommClientMsg,
+    name="READ_FILE_ABORT",
+    arg_count=0,
+    trailing_binary=False,
+):
     """
     Tells the server to stop sending a file to the client.
     """
 
-    name: ClassVar[Final[str]] = "READ_FILE_ABORT"
-    msg_code: ClassVar[Final[int]] = next_msg_code()
-    arg_count: ClassVar[Final[int]] = 0
-    trailing_binary: ClassVar[Final[bool]] = False
-
-class SmdCommClientListAppsMsg(SmdCommClientMsg):
+class SmdCommClientListAppsMsg(
+    SmdCommClientMsg,
+    name="LIST_APPS",
+    arg_count=1,
+    trailing_binary=False,
+):
     """
     Tells the server to send a sandbox's app list.
     """
-
-    name: ClassVar[Final[str]] = "LIST_APPS"
-    msg_code: ClassVar[Final[int]] = next_msg_code()
-    arg_count: ClassVar[Final[int]] = 1
-    trailing_binary: ClassVar[Final[bool]] = False
 
     def __init__(
         self,
@@ -740,15 +761,15 @@ class SmdCommClientListAppsMsg(SmdCommClientMsg):
             "Sandbox UUID failed validation",
         )
 
-class SmdCommClientGetAppInfoMsg(SmdCommClientMsg):
+class SmdCommClientGetAppInfoMsg(
+    SmdCommClientMsg,
+    name="GET_APP_INFO",
+    arg_count=2,
+    trailing_binary=False,
+):
     """
     Tells the server to send application info (metadata) to the client.
     """
-
-    name: ClassVar[Final[str]] = "GET_APP_INFO"
-    msg_code: ClassVar[Final[int]] = next_msg_code()
-    arg_count: ClassVar[Final[int]] = 2
-    trailing_binary: ClassVar[Final[bool]] = False
 
     def __init__(
         self,
@@ -773,15 +794,15 @@ class SmdCommClientGetAppInfoMsg(SmdCommClientMsg):
             "Desktop file name failed validation",
         )
 
-class SmdCommClientExecMsg(SmdCommClientMsg):
+class SmdCommClientExecMsg(
+    SmdCommClientMsg,
+    name="EXEC",
+    arg_count=2,
+    trailing_binary=True,
+):
     """
     Tells the server to execute a program in a sandbox.
     """
-
-    name: ClassVar[Final[str]] = "EXEC"
-    msg_code: ClassVar[Final[int]] = next_msg_code()
-    arg_count: ClassVar[Final[int]] = 2
-    trailing_binary: ClassVar[Final[bool]] = True
 
     def __init__(
         self,
@@ -802,19 +823,19 @@ class SmdCommClientExecMsg(SmdCommClientMsg):
         )
         SmdCommon.validate_id(
             arg_list[1],
-            [SmdValidateType.RELATIVE_PATH],
-            "Program path failed validation",
+            [SmdValidateType.DESKTOP_FILE],
+            "Desktop file name failed validation",
         )
 
-class SmdCommClientShellMsg(SmdCommClientMsg):
+class SmdCommClientShellMsg(
+    SmdCommClientMsg,
+    name="SHELL",
+    arg_count=1,
+    trailing_binary=False,
+):
     """
     Attempts to shell into a sandbox.
     """
-
-    name: ClassVar[Final[str]] = "SHELL"
-    msg_code: ClassVar[Final[int]] = next_msg_code()
-    arg_count: ClassVar[Final[int]] = 1
-    trailing_binary: ClassVar[Final[bool]] = False
 
     def __init__(
         self,
@@ -823,7 +844,7 @@ class SmdCommClientShellMsg(SmdCommClientMsg):
         binary_blob: bytes | None = None,
     ) -> None:
         """
-        EXEC init function.
+        SHELL init function.
         """
 
         super().__init__(correlation_id, arg_list, binary_blob)
@@ -834,145 +855,156 @@ class SmdCommClientShellMsg(SmdCommClientMsg):
             "Sandbox UUID failed validation",
         )
 
-class SmdCommClientShellHsBlockMsg(SmdCommClientMsg):
+class SmdCommServerShellDisconnectMsg(
+    SmdCommServerMsg,
+    name="SHELL_DISCONNECT",
+    arg_count=0,
+    trailing_binary=False,
+):
+    """
+    Informs the server that the client is disconnecting from the sandbox's
+    console.
+    """
+
+class SmdCommClientShellHsBlockMsg(
+    SmdCommClientMsg,
+    name="SHELL_HS_BLOCK",
+    arg_count=0,
+    trailing_binary=True,
+):
     """
     Sends a block of data to a sandbox's shell.
     """
-
-    name: ClassVar[Final[str]] = "SHELL_HS_BLOCK"
-    msg_code: ClassVar[Final[int]] = next_msg_code()
-    arg_count: ClassVar[Final[int]] = 0
-    trailing_binary: ClassVar[Final[bool]] = True
 
 ########################
 # COMM SERVER MESSAGES #
 ########################
 
-class SmdCommServerConfirmNeedRestartMsg(SmdCommServerMsg):
+class SmdCommServerConfirmNeedRestartMsg(
+    SmdCommServerMsg,
+    name="CONFIRM_NEED_RESTART",
+    arg_count=0,
+    trailing_binary=False,
+):
     """
     Informs the client that the server needs restarted to apply software
     updates.
     """
 
-    name: ClassVar[Final[str]] = "CONFIRM_NEED_RESTART"
-    msg_code: ClassVar[Final[int]] = next_msg_code()
-    arg_count: ClassVar[Final[int]] = 0
-    trailing_binary: ClassVar[Final[bool]] = False
-
-class SmdCommServerDenyNeedRestartMsg(SmdCommServerMsg):
+class SmdCommServerDenyNeedRestartMsg(
+    SmdCommServerMsg,
+    name="DENY_NEED_RESTART",
+    arg_count=0,
+    trailing_binary=False,
+):
     """
     Informs the client that the server does not need restarted.
     """
 
-    name: ClassVar[Final[str]] = "DENY_NEED_RESTART"
-    msg_code: ClassVar[Final[int]] = next_msg_code()
-    arg_count: ClassVar[Final[int]] = 0
-    trailing_binary: ClassVar[Final[bool]] = False
-
-class SmdCommServerRestartInprogressMsg(SmdCommServerMsg):
+class SmdCommServerRestartInprogressMsg(
+    SmdCommServerMsg,
+    name="RESTART_INPROGRESS",
+    arg_count=0,
+    trailing_binary=False,
+):
     """
     Informs the client that the server is restarting.
     """
 
-    name: ClassVar[Final[str]] = "RESTART_INPROGRESS"
-    msg_code: ClassVar[Final[int]] = next_msg_code()
-    arg_count: ClassVar[Final[int]] = 0
-    trailing_binary: ClassVar[Final[bool]] = False
-
-class SmdCommServerRestartDeniedMsg(SmdCommServerMsg):
+class SmdCommServerRestartDeniedMsg(
+    SmdCommServerMsg,
+    name="RESTART_DENIED",
+    arg_count=0,
+    trailing_binary=False,
+):
     """
     Informs the client that the restart request was denied.
     """
 
-    name: ClassVar[Final[str]] = "RESTART_DENIED"
-    msg_code: ClassVar[Final[int]] = next_msg_code()
-    arg_count: ClassVar[Final[int]] = 0
-    trailing_binary: ClassVar[Final[bool]] = False
-
-class SmdCommServerDupNameMsg(SmdCommServerMsg):
+class SmdCommServerDupNameMsg(
+    SmdCommServerMsg,
+    name="DUP_NAME",
+    arg_count=0,
+    trailing_binary=False,
+):
     """
     Informs the client that a requested new sandbox name is already in use.
     """
 
-    name: ClassVar[Final[str]] = "DUP_NAME"
-    msg_code: ClassVar[Final[int]] = next_msg_code()
-    arg_count: ClassVar[Final[int]] = 0
-    trailing_binary: ClassVar[Final[bool]] = False
-
-class SmdCommServerSandboxRunningMsg(SmdCommServerMsg):
+class SmdCommServerSandboxRunningMsg(
+    SmdCommServerMsg,
+    name="SANDBOX_RUNNING",
+    arg_count=0,
+    trailing_binary=False,
+):
     """
     Informs the client that a requested operation could not be performed
     because the target sandbox is running.
     """
 
-    name: ClassVar[Final[str]] = "SANDBOX_RUNNING"
-    msg_code: ClassVar[Final[int]] = next_msg_code()
-    arg_count: ClassVar[Final[int]] = 0
-    trailing_binary: ClassVar[Final[bool]] = False
-
-class SmdCommServerSandboxNotRunningMsg(SmdCommServerMsg):
+class SmdCommServerSandboxNotRunningMsg(
+    SmdCommServerMsg,
+    name="SANDBOX_NOT_RUNNING",
+    arg_count=0,
+    trailing_binary=False,
+):
     """
     Informs the client that a requested operation could not be performed
     because the target sandbox is not running.
     """
 
-    name: ClassVar[Final[str]] = "SANDBOX_NOT_RUNNING"
-    msg_code: ClassVar[Final[int]] = next_msg_code()
-    arg_count: ClassVar[Final[int]] = 0
-    trailing_binary: ClassVar[Final[bool]] = False
-
-class SmdCommServerSandboxMissingMsg(SmdCommServerMsg):
+class SmdCommServerSandboxMissingMsg(
+    SmdCommServerMsg,
+    name="SANDBOX_MISSING",
+    arg_count=0,
+    trailing_binary=False,
+):
     """
     Informs the client that a referenced sandbox cannot be found.
     """
 
-    name: ClassVar[Final[str]] = "SANDBOX_MISSING"
-    msg_code: ClassVar[Final[int]] = next_msg_code()
-    arg_count: ClassVar[Final[int]] = 0
-    trailing_binary: ClassVar[Final[bool]] = False
-
-class SmdCommServerConfigInvalidMsg(SmdCommServerMsg):
+class SmdCommServerConfigInvalidMsg(
+    SmdCommServerMsg,
+    name="CONFIG_INVALID",
+    arg_count=0,
+    trailing_binary=False,
+):
     """
     Informs the client that the configuration it attempted to apply to a
     sandbox is invalid.
     """
 
-    name: ClassVar[Final[str]] = "CONFIG_INVALID"
-    msg_code: ClassVar[Final[int]] = next_msg_code()
-    arg_count: ClassVar[Final[int]] = 0
-    trailing_binary: ClassVar[Final[bool]] = False
-
-class SmdCommServerFsoMissingMsg(SmdCommServerMsg):
+class SmdCommServerFsoMissingMsg(
+    SmdCommServerMsg,
+    name="FSO_MISSING",
+    arg_count=0,
+    trailing_binary=False,
+):
     """
     Informs the client that a referenced filesystem object in a sandbox does
     not exist.
     """
 
-    name: ClassVar[Final[str]] = "FSO_MISSING"
-    msg_code: ClassVar[Final[int]] = next_msg_code()
-    arg_count: ClassVar[Final[int]] = 0
-    trailing_binary: ClassVar[Final[bool]] = False
-
-class SmdCommServerFsoExistsMsg(SmdCommServerMsg):
+class SmdCommServerFsoExistsMsg(
+    SmdCommServerMsg,
+    name="FSO_EXISTS",
+    arg_count=0,
+    trailing_binary=False,
+):
     """
     Informs the client that a referenced filesystem object in a sandbox
     already exists.
     """
 
-    name: ClassVar[Final[str]] = "FSO_EXISTS"
-    msg_code: ClassVar[Final[int]] = next_msg_code()
-    arg_count: ClassVar[Final[int]] = 0
-    trailing_binary: ClassVar[Final[bool]] = False
-
-class SmdCommServerCreateInprogressMsg(SmdCommServerMsg):
+class SmdCommServerCreateInprogressMsg(
+    SmdCommServerMsg,
+    name="CREATE_INPROGRESS",
+    arg_count=1,
+    trailing_binary=False,
+):
     """
     Informs the client that a sandbox is being created.
     """
-
-    name: ClassVar[Final[str]] = "CREATE_INPROGRESS"
-    msg_code: ClassVar[Final[int]] = next_msg_code()
-    arg_count: ClassVar[Final[int]] = 1
-    trailing_binary: ClassVar[Final[bool]] = False
 
     def __init__(
         self,
@@ -992,35 +1024,35 @@ class SmdCommServerCreateInprogressMsg(SmdCommServerMsg):
             "Sandbox UUID failed validation",
         )
 
-class SmdCommServerCreateSuccessMsg(SmdCommServerMsg):
+class SmdCommServerCreateSuccessMsg(
+    SmdCommServerMsg,
+    name="CREATE_SUCCESS",
+    arg_count=0,
+    trailing_binary=False,
+):
     """
     Informs the client that a sandbox has been created.
     """
 
-    name: ClassVar[Final[str]] = "CREATE_SUCCESS"
-    msg_code: ClassVar[Final[int]] = next_msg_code()
-    arg_count: ClassVar[Final[int]] = 0
-    trailing_binary: ClassVar[Final[bool]] = False
-
-class SmdCommServerCreateFailedMsg(SmdCommServerMsg):
+class SmdCommServerCreateFailedMsg(
+    SmdCommServerMsg,
+    name="CREATE_FAILED",
+    arg_count=0,
+    trailing_binary=False,
+):
     """
     Informs the client that creation of a sandbox failed.
     """
 
-    name: ClassVar[Final[str]] = "CREATE_FAILED"
-    msg_code: ClassVar[Final[int]] = next_msg_code()
-    arg_count: ClassVar[Final[int]] = 0
-    trailing_binary: ClassVar[Final[bool]] = False
-
-class SmdCommServerConfigInprogressMsg(SmdCommServerMsg):
+class SmdCommServerConfigInprogressMsg(
+    SmdCommServerMsg,
+    name="CONFIG_INPROGRESS",
+    arg_count=1,
+    trailing_binary=False,
+):
     """
     Informs the client that a sandbox is being configured.
     """
-
-    name: ClassVar[Final[str]] = "CONFIG_INPROGRESS"
-    msg_code: ClassVar[Final[int]] = next_msg_code()
-    arg_count: ClassVar[Final[int]] = 1
-    trailing_binary: ClassVar[Final[bool]] = False
 
     def __init__(
         self,
@@ -1040,57 +1072,57 @@ class SmdCommServerConfigInprogressMsg(SmdCommServerMsg):
             "Sandbox UUID failed validation",
         )
 
-class SmdCommServerConfigSuccessMsg(SmdCommServerMsg):
+class SmdCommServerConfigSuccessMsg(
+    SmdCommServerMsg,
+    name="CONFIG_SUCCESS",
+    arg_count=0,
+    trailing_binary=False,
+):
     """
     Informs the client that a sandbox has been configured.
     """
 
-    name: ClassVar[Final[str]] = "CONFIG_SUCCESS"
-    msg_code: ClassVar[Final[int]] = next_msg_code()
-    arg_count: ClassVar[Final[int]] = 0
-    trailing_binary: ClassVar[Final[bool]] = False
-
-class SmdCommServerConfigFailedMsg(SmdCommServerMsg):
+class SmdCommServerConfigFailedMsg(
+    SmdCommServerMsg,
+    name="CONFIG_FAILED",
+    arg_count=0,
+    trailing_binary=False,
+):
     """
     Informs the client that configuration of a sandbox failed.
     """
 
-    name: ClassVar[Final[str]] = "CONFIG_FAILED"
-    msg_code: ClassVar[Final[int]] = next_msg_code()
-    arg_count: ClassVar[Final[int]] = 0
-    trailing_binary: ClassVar[Final[bool]] = False
-
-class SmdCommServerConfigInfoStartMsg(SmdCommServerMsg):
+class SmdCommServerConfigInfoStartMsg(
+    SmdCommServerMsg,
+    name="CONFIG_INFO_START",
+    arg_count=0,
+    trailing_binary=False,
+):
     """
     Informs the client that messages defining a sandbox's configuration are
     about to be sent.
     """
 
-    name: ClassVar[Final[str]] = "CONFIG_INFO_START"
-    msg_code: ClassVar[Final[int]] = next_msg_code()
-    arg_count: ClassVar[Final[int]] = 0
-    trailing_binary: ClassVar[Final[bool]] = False
-
-class SmdCommServerConfigInfoEndMsg(SmdCommServerMsg):
+class SmdCommServerConfigInfoEndMsg(
+    SmdCommServerMsg,
+    name="CONFIG_INFO_END",
+    arg_count=0,
+    trailing_binary=False,
+):
     """
     Informs the client that the server is done sending messages defining a
     sandbox's configuration.
     """
 
-    name: ClassVar[Final[str]] = "CONFIG_INFO_END"
-    msg_code: ClassVar[Final[int]] = next_msg_code()
-    arg_count: ClassVar[Final[int]] = 0
-    trailing_binary: ClassVar[Final[bool]] = False
-
-class SmdCommServerDeleteInprogressMsg(SmdCommServerMsg):
+class SmdCommServerDeleteInprogressMsg(
+    SmdCommServerMsg,
+    name="DELETE_INPROGRESS",
+    arg_count=1,
+    trailing_binary=False,
+):
     """
     Informs the client that a sandbox is being deleted.
     """
-
-    name: ClassVar[Final[str]] = "DELETE_INPROGRESS"
-    msg_code: ClassVar[Final[int]] = next_msg_code()
-    arg_count: ClassVar[Final[int]] = 1
-    trailing_binary: ClassVar[Final[bool]] = False
 
     def __init__(
         self,
@@ -1110,35 +1142,35 @@ class SmdCommServerDeleteInprogressMsg(SmdCommServerMsg):
             "Sandbox UUID failed validation",
         )
 
-class SmdCommServerDeleteSuccessMsg(SmdCommServerMsg):
+class SmdCommServerDeleteSuccessMsg(
+    SmdCommServerMsg,
+    name="DELETE_SUCCESS",
+    arg_count=0,
+    trailing_binary=False,
+):
     """
     Informs the client that a sandbox has been deleted.
     """
 
-    name: ClassVar[Final[str]] = "DELETE_SUCCESS"
-    msg_code: ClassVar[Final[int]] = next_msg_code()
-    arg_count: ClassVar[Final[int]] = 0
-    trailing_binary: ClassVar[Final[bool]] = False
-
-class SmdCommServerDeleteFailedMsg(SmdCommServerMsg):
+class SmdCommServerDeleteFailedMsg(
+    SmdCommServerMsg,
+    name="DELETE_FAILED",
+    arg_count=0,
+    trailing_binary=False,
+):
     """
     Informs the client that deletion of a sandbox failed.
     """
 
-    name: ClassVar[Final[str]] = "DELETE_FAILED"
-    msg_code: ClassVar[Final[int]] = next_msg_code()
-    arg_count: ClassVar[Final[int]] = 0
-    trailing_binary: ClassVar[Final[bool]] = False
-
-class SmdCommServerCloneInprogressMsg(SmdCommServerMsg):
+class SmdCommServerCloneInprogressMsg(
+    SmdCommServerMsg,
+    name="CLONE_INPROGRESS",
+    arg_count=3,
+    trailing_binary=False,
+):
     """
     Informs the client that a sandbox is being cloned.
     """
-
-    name: ClassVar[Final[str]] = "CLONE_INPROGRESS"
-    msg_code: ClassVar[Final[int]] = next_msg_code()
-    arg_count: ClassVar[Final[int]] = 3
-    trailing_binary: ClassVar[Final[bool]] = False
 
     def __init__(
         self,
@@ -1168,35 +1200,35 @@ class SmdCommServerCloneInprogressMsg(SmdCommServerMsg):
             "Cloned sandbox name failed validation",
         )
 
-class SmdCommServerCloneSuccessMsg(SmdCommServerMsg):
+class SmdCommServerCloneSuccessMsg(
+    SmdCommServerMsg,
+    name="CLONE_SUCCESS",
+    arg_count=0,
+    trailing_binary=False,
+):
     """
     Informs the client that a sandbox has been cloned.
     """
 
-    name: ClassVar[Final[str]] = "CLONE_SUCCESS"
-    msg_code: ClassVar[Final[int]] = next_msg_code()
-    arg_count: ClassVar[Final[int]] = 0
-    trailing_binary: ClassVar[Final[bool]] = False
-
-class SmdCommServerCloneFailedMsg(SmdCommServerMsg):
+class SmdCommServerCloneFailedMsg(
+    SmdCommServerMsg,
+    name="CLONE_FAILED",
+    arg_count=0,
+    trailing_binary=False,
+):
     """
     Informs the client that cloning a sandbox failed.
     """
 
-    name: ClassVar[Final[str]] = "CLONE_FAILED"
-    msg_code: ClassVar[Final[int]] = next_msg_code()
-    arg_count: ClassVar[Final[int]] = 0
-    trailing_binary: ClassVar[Final[bool]] = False
-
-class SmdCommServerBootInprogressMsg(SmdCommServerMsg):
+class SmdCommServerBootInprogressMsg(
+    SmdCommServerMsg,
+    name="BOOT_INPROGRESS",
+    arg_count=2,
+    trailing_binary=False,
+):
     """
     Informs the client that a sandbox is booting.
     """
-
-    name: ClassVar[Final[str]] = "BOOT_INPROGRESS"
-    msg_code: ClassVar[Final[int]] = next_msg_code()
-    arg_count: ClassVar[Final[int]] = 2
-    trailing_binary: ClassVar[Final[bool]] = False
 
     def __init__(
         self,
@@ -1221,35 +1253,35 @@ class SmdCommServerBootInprogressMsg(SmdCommServerMsg):
             "Boot mode failed validation",
         )
 
-class SmdCommServerBootSuccessMsg(SmdCommServerMsg):
+class SmdCommServerBootSuccessMsg(
+    SmdCommServerMsg,
+    name="BOOT_SUCCESS",
+    arg_count=0,
+    trailing_binary=False,
+):
     """
     Informs the client that a sandbox has been booted.
     """
 
-    name: ClassVar[Final[str]] = "BOOT_SUCCESS"
-    msg_code: ClassVar[Final[int]] = next_msg_code()
-    arg_count: ClassVar[Final[int]] = 0
-    trailing_binary: ClassVar[Final[bool]] = False
-
-class SmdCommServerBootFailedMsg(SmdCommServerMsg):
+class SmdCommServerBootFailedMsg(
+    SmdCommServerMsg,
+    name="BOOT_FAILED",
+    arg_count=0,
+    trailing_binary=False,
+):
     """
     Informs the client that booting a sandbox failed.
     """
 
-    name: ClassVar[Final[str]] = "BOOT_FAILED"
-    msg_code: ClassVar[Final[int]] = next_msg_code()
-    arg_count: ClassVar[Final[int]] = 0
-    trailing_binary: ClassVar[Final[bool]] = False
-
-class SmdCommServerShutdownInprogressMsg(SmdCommServerMsg):
+class SmdCommServerShutdownInprogressMsg(
+    SmdCommServerMsg,
+    name="SHUTDOWN_INPROGRESS",
+    arg_count=2,
+    trailing_binary=False,
+):
     """
     Informs the client that a sandbox is being shut down.
     """
-
-    name: ClassVar[Final[str]] = "SHUTDOWN_INPROGRESS"
-    msg_code: ClassVar[Final[int]] = next_msg_code()
-    arg_count: ClassVar[Final[int]] = 2
-    trailing_binary: ClassVar[Final[bool]] = False
 
     def __init__(
         self,
@@ -1274,98 +1306,98 @@ class SmdCommServerShutdownInprogressMsg(SmdCommServerMsg):
             "Shutdown mode failed validation",
         )
 
-class SmdCommServerShutdownSuccessMsg(SmdCommServerMsg):
+class SmdCommServerShutdownSuccessMsg(
+    SmdCommServerMsg,
+    name="SHUTDOWN_SUCCESS",
+    arg_count=0,
+    trailing_binary=False,
+):
     """
     Informs the client that a sandbox has been shut down.
     """
 
-    name: ClassVar[Final[str]] = "SHUTDOWN_SUCCESS"
-    msg_code: ClassVar[Final[int]] = next_msg_code()
-    arg_count: ClassVar[Final[int]] = 0
-    trailing_binary: ClassVar[Final[bool]] = False
-
-class SmdCommServerShutdownFailedMsg(SmdCommServerMsg):
+class SmdCommServerShutdownFailedMsg(
+    SmdCommServerMsg,
+    name="SHUTDOWN_FAILED",
+    arg_count=0,
+    trailing_binary=False,
+):
     """
     Informs the client that shutting down a sandbox failed.
     """
 
-    name: ClassVar[Final[str]] = "SHUTDOWN_FAILED"
-    msg_code: ClassVar[Final[int]] = next_msg_code()
-    arg_count: ClassVar[Final[int]] = 0
-    trailing_binary: ClassVar[Final[bool]] = False
-
-class SmdCommServerCreateFileAckMsg(SmdCommServerMsg):
+class SmdCommServerCreateFileAckMsg(
+    SmdCommServerMsg,
+    name="CREATE_FILE_ACK",
+    arg_count=0,
+    trailing_binary=False,
+):
     """
     Informs the client that a file creation request has been accepted and the
     server is ready to receive file data.
     """
 
-    name: ClassVar[Final[str]] = "CREATE_FILE_ACK"
-    msg_code: ClassVar[Final[int]] = next_msg_code()
-    arg_count: ClassVar[Final[int]] = 0
-    trailing_binary: ClassVar[Final[bool]] = False
-
-class SmdCommServerCreateFileSuccessMsg(SmdCommServerMsg):
+class SmdCommServerCreateFileSuccessMsg(
+    SmdCommServerMsg,
+    name="CREATE_FILE_SUCCESS",
+    arg_count=0,
+    trailing_binary=False,
+):
     """
     Informs the client that a file has been created in a sandbox.
     """
 
-    name: ClassVar[Final[str]] = "CREATE_FILE_SUCCESS"
-    msg_code: ClassVar[Final[int]] = next_msg_code()
-    arg_count: ClassVar[Final[int]] = 0
-    trailing_binary: ClassVar[Final[bool]] = False
-
-class SmdCommServerCreateFileFailedMsg(SmdCommServerMsg):
+class SmdCommServerCreateFileFailedMsg(
+    SmdCommServerMsg,
+    name="CREATE_FILE_FAILED",
+    arg_count=0,
+    trailing_binary=True,
+):
     """
     Informs the client that a file creation operation failed.
     """
 
-    name: ClassVar[Final[str]] = "CREATE_FILE_FAILED"
-    msg_code: ClassVar[Final[int]] = next_msg_code()
-    arg_count: ClassVar[Final[int]] = 0
-    trailing_binary: ClassVar[Final[bool]] = True
-
-class SmdCommServerCreateDirSuccessMsg(SmdCommServerMsg):
+class SmdCommServerCreateDirSuccessMsg(
+    SmdCommServerMsg,
+    name="CREATE_DIR_SUCCESS",
+    arg_count=0,
+    trailing_binary=False,
+):
     """
     Informs the client that a directory has been created in a sandbox.
     """
 
-    name: ClassVar[Final[str]] = "CREATE_DIR_SUCCESS"
-    msg_code: ClassVar[Final[int]] = next_msg_code()
-    arg_count: ClassVar[Final[int]] = 0
-    trailing_binary: ClassVar[Final[bool]] = False
-
-class SmdCommServerCreateDirFailedMsg(SmdCommServerMsg):
+class SmdCommServerCreateDirFailedMsg(
+    SmdCommServerMsg,
+    name="CREATE_DIR_FAILED",
+    arg_count=0,
+    trailing_binary=True,
+):
     """
     Informs the client that a directory creation operation failed.
     """
 
-    name: ClassVar[Final[str]] = "CREATE_DIR_FAILED"
-    msg_code: ClassVar[Final[int]] = next_msg_code()
-    arg_count: ClassVar[Final[int]] = 0
-    trailing_binary: ClassVar[Final[bool]] = True
-
-class SmdCommServerListDirStartMsg(SmdCommServerMsg):
+class SmdCommServerListDirStartMsg(
+    SmdCommServerMsg,
+    name="LIST_DIR_START",
+    arg_count=0,
+    trailing_binary=False,
+):
     """
     Informs the client that messages defining a directory's metadata and its
     directory listing are about to be sent.
     """
 
-    name: ClassVar[Final[str]] = "LIST_DIR_START"
-    msg_code: ClassVar[Final[int]] = next_msg_code()
-    arg_count: ClassVar[Final[int]] = 0
-    trailing_binary: ClassVar[Final[bool]] = False
-
-class SmdCommServerListDirEntry(SmdCommServerMsg):
+class SmdCommServerListDirEntry(
+    SmdCommServerMsg,
+    name="LIST_DIR_ENTRY",
+    arg_count=5,
+    trailing_binary=True,
+):
     """
     Provides file or directory metadata to the client as part of a directory
     listing.
     """
-
-    name: ClassVar[Final[str]] = "LIST_DIR_ENTRY"
-    msg_code: ClassVar[Final[int]] = next_msg_code()
-    arg_count: ClassVar[Final[int]] = 5
-    trailing_binary: ClassVar[Final[bool]] = True
 
     def __init__(
         self,
@@ -1405,37 +1437,37 @@ class SmdCommServerListDirEntry(SmdCommServerMsg):
             "File/dir name failed validatoin",
         )
 
-class SmdCommServerListDirEndMsg(SmdCommServerMsg):
+class SmdCommServerListDirEndMsg(
+    SmdCommServerMsg,
+    name="LIST_DIR_END",
+    arg_count=0,
+    trailing_binary=False,
+):
     """
     Informs the client that messages defining a directory's metadata and its
     directory listing are done being sent.
     """
 
-    name: ClassVar[Final[str]] = "LIST_DIR_END"
-    msg_code: ClassVar[Final[int]] = next_msg_code()
-    arg_count: ClassVar[Final[int]] = 0
-    trailing_binary: ClassVar[Final[bool]] = False
-
-class SmdCommServerListDirFailedMsg(SmdCommServerMsg):
+class SmdCommServerListDirFailedMsg(
+    SmdCommServerMsg,
+    name="LIST_DIR_FAILED",
+    arg_count=0,
+    trailing_binary=False,
+):
     """
     Informs the client that listing a directory failed.
     """
 
-    name: ClassVar[Final[str]] = "LIST_DIR_FAILED"
-    msg_code: ClassVar[Final[int]] = next_msg_code()
-    arg_count: ClassVar[Final[int]] = 0
-    trailing_binary: ClassVar[Final[bool]] = False
-
-class SmdCommServerReadFileStartMsg(SmdCommServerMsg):
+class SmdCommServerReadFileStartMsg(
+    SmdCommServerMsg,
+    name="READ_FILE_START",
+    arg_count=3,
+    trailing_binary=False,
+):
     """
     Informs the frontend that the server is about to send it the contents of
     a file, and provides the file's metadata to the client.
     """
-
-    name: ClassVar[Final[str]] = "READ_FILE_START"
-    msg_code: ClassVar[Final[int]] = next_msg_code()
-    arg_count: ClassVar[Final[int]] = 3
-    trailing_binary: ClassVar[Final[bool]] = False
 
     def __init__(
         self,
@@ -1465,66 +1497,66 @@ class SmdCommServerReadFileStartMsg(SmdCommServerMsg):
             "File/dir permissions failed validation",
         )
 
-class SmdCommServerReadFileBlockMsg(SmdCommServerMsg):
+class SmdCommServerReadFileBlockMsg(
+    SmdCommServerMsg,
+    name="READ_FILE_BLOCK",
+    arg_count=0,
+    trailing_binary=True,
+):
     """
     Provides a block of a file to the client.
     """
 
-    name: ClassVar[Final[str]] = "READ_FILE_BLOCK"
-    msg_code: ClassVar[Final[int]] = next_msg_code()
-    arg_count: ClassVar[Final[int]] = 0
-    trailing_binary: ClassVar[Final[bool]] = True
-
-class SmdCommServerReadFileEndMsg(SmdCommServerMsg):
+class SmdCommServerReadFileEndMsg(
+    SmdCommServerMsg,
+    name="READ_FILE_END",
+    arg_count=0,
+    trailing_binary=False,
+):
     """
     Informs the client that a file has been fully sent.
     """
 
-    name: ClassVar[Final[str]] = "READ_FILE_END"
-    msg_code: ClassVar[Final[int]] = next_msg_code()
-    arg_count: ClassVar[Final[int]] = 0
-    trailing_binary: ClassVar[Final[bool]] = False
-
-class SmdCommServerReadFileAbortAckMsg(SmdCommServerMsg):
+class SmdCommServerReadFileAbortAckMsg(
+    SmdCommServerMsg,
+    name="READ_FILE_ABORT_ACK",
+    arg_count=0,
+    trailing_binary=False,
+):
     """
     Informs the client that a `READ_FILE_ABORT` message has been accepted and
     no further blocks of a file will be sent.
     """
 
-    name: ClassVar[Final[str]] = "READ_FILE_ABORT_ACK"
-    msg_code: ClassVar[Final[int]] = next_msg_code()
-    arg_count: ClassVar[Final[int]] = 0
-    trailing_binary: ClassVar[Final[bool]] = False
-
-class SmdCommServerReadFileFailedMsg(SmdCommServerMsg):
+class SmdCommServerReadFileFailedMsg(
+    SmdCommServerMsg,
+    name="READ_FILE_FAILED",
+    arg_count=0,
+    trailing_binary=True,
+):
     """
     Informs the client that the file read operation failed.
     """
 
-    name: ClassVar[Final[str]] = "READ_FILE_FAILED"
-    msg_code: ClassVar[Final[int]] = next_msg_code()
-    arg_count: ClassVar[Final[int]] = 0
-    trailing_binary: ClassVar[Final[bool]] = True
-
-class SmdCommServerListAppsStartMsg(SmdCommServerMsg):
+class SmdCommServerListAppsStartMsg(
+    SmdCommServerMsg,
+    name="LIST_APPS_START",
+    arg_count=0,
+    trailing_binary=False,
+):
     """
     Informs the client that the server is about to send an application list.
     """
 
-    name: ClassVar[Final[str]] = "LIST_APPS_START"
-    msg_code: ClassVar[Final[int]] = next_msg_code()
-    arg_count: ClassVar[Final[int]] = 0
-    trailing_binary: ClassVar[Final[bool]] = False
-
-class SmdCommServerListAppsEntryMsg(SmdCommServerMsg):
+class SmdCommServerListAppsEntryMsg(
+    SmdCommServerMsg,
+    name="LIST_APPS_ENTRY",
+    arg_count=3,
+    trailing_binary=False,
+):
     """
     Provides an application entry to the client.
     """
-
-    name: ClassVar[Final[str]] = "LIST_APPS_ENTRY"
-    msg_code: ClassVar[Final[int]] = next_msg_code()
-    arg_count: ClassVar[Final[int]] = 3
-    trailing_binary: ClassVar[Final[bool]] = False
 
     def __init__(
         self,
@@ -1546,22 +1578,851 @@ class SmdCommServerListAppsEntryMsg(SmdCommServerMsg):
             "Desktop file name failed validation",
         )
 
-class SmdCommServerListAppsEndMsg(SmdCommServerMsg):
+class SmdCommServerListAppsEndMsg(
+    SmdCommServerMsg,
+    name="LIST_APPS_END",
+    arg_count=0,
+    trailing_binary=False,
+):
     """
     Informs the client that the server is done sending an application list.
     """
 
-    name: ClassVar[Final[str]] = "LIST_APPS_END"
-    msg_code: ClassVar[Final[int]] = next_msg_code()
-    arg_count: ClassVar[Final[int]] = 0
-    trailing_binary: ClassVar[Final[bool]] = False
-
-class SmdCommServerListAppsFailedMsg(SmdCommServerMsg):
+class SmdCommServerListAppsFailedMsg(
+    SmdCommServerMsg,
+    name="LIST_APPS_FAILED",
+    arg_count=0,
+    trailing_binary=True,
+):
     """
     Informs the client that the app listing operation failed.
     """
 
-    name: ClassVar[Final[str]] = "LIST_APPS_FAILED"
-    msg_code: ClassVar[Final[int]] = next_msg_code()
-    arg_count: ClassVar[Final[int]] = 0
-    trailing_binary: ClassVar[Final[bool]] = True
+class SmdCommServerGetAppInfoStartMsg(
+    SmdCommServerMsg,
+    name="GET_APP_INFO_START",
+    arg_count=0,
+    trailing_binary=False,
+):
+    """
+    Informs the client that messages defining an application's info are about
+    to be sent.
+    """
+
+class SmdCommServerAppInfoNameMsg(
+    SmdCommServerMsg,
+    name="APP_INFO_NAME",
+    arg_count=1,
+    trailing_binary=False,
+):
+    """
+    Provides an application's name to the client.
+    """
+
+    ## There is intentionally no argument validation for this message.
+
+class SmdCommServerAppInfoGenericNameMsg(
+    SmdCommServerMsg,
+    name="APP_INFO_GENERIC_NAME",
+    arg_count=1,
+    trailing_binary=False,
+):
+    """
+    Provides an application's generic name to the client.
+    """
+
+    ## There is intentionally no argument validation for this message.
+
+class SmdCommServerAppInfoCommentMsg(
+    SmdCommServerMsg,
+    name="APP_INFO_COMMENT",
+    arg_count=1,
+    trailing_binary=False,
+):
+    """
+    Provides an application's comment data to the client.
+    """
+
+    ## There is intentionally no argument validation for this message.
+
+class SmdCommServerAppInfoExecMsg(
+    SmdCommServerMsg,
+    name="APP_INFO_EXEC",
+    arg_count=1,
+    trailing_binary=False,
+):
+    """
+    Provides an application's execution data to the client.
+    """
+
+    ## There is intentionally no argument validation for this message. One
+    ## might reasonably think this may require validation, but we execute
+    ## desktop files entirely within the sandbox, so there is theoretically no
+    ## risk to the host from not validating this.
+
+class SmdCommServerAppInfoWorkDirMsg(
+    SmdCommServerMsg,
+    name="APP_INFO_WORK_DIR",
+    arg_count=1,
+    trailing_binary=False,
+):
+    """
+    Provides an application's working directory to the client.
+    """
+
+    ## There is intentionally no argument validation for this message.
+
+class SmdCommServerAppInfoMimetypeMsg(
+    SmdCommServerMsg,
+    name="APP_INFO_MIMETYPE",
+    arg_count=1,
+    trailing_binary=False,
+):
+    """
+    Provides a MIME type the application is capable of handling to the client.
+    """
+
+    ## There is intentionally no argument validation for this message.
+
+class SmdCommServerGetAppInfoEndMsg(
+    SmdCommServerMsg,
+    name="GET_APP_INFO_END",
+    arg_count=0,
+    trailing_binary=False,
+):
+    """
+    Informs the client that messages defining an application's info have been
+    sent.
+    """
+
+class SmdCommServerGetAppInfoFailedMsg(
+    SmdCommServerMsg,
+    name="GET_APP_INFO_FAILED",
+    arg_count=0,
+    trailing_binary=False,
+):
+    """
+    Informs the client that getting an application's info failed.
+    """
+
+class SmdCommServerExecSuccessMsg(
+    SmdCommServerMsg,
+    name="EXEC_SUCCESS",
+    arg_count=0,
+    trailing_binary=False,
+):
+    """
+    Informs the client that an application has been successfully executed.
+    """
+
+class SmdCommServerExecFailedMsg(
+    SmdCommServerMsg,
+    name="EXEC_FAILED",
+    arg_count=0,
+    trailing_binary=False,
+):
+    """
+    Informs the client that an application could not be executed.
+    """
+
+class SmdCommServerShellAckMsg(
+    SmdCommServerMsg,
+    name="SHELL_ACK",
+    arg_count=0,
+    trailing_binary=False,
+):
+    """
+    Informs the client that a request to open the sandbox's console has been
+    accepted.
+    """
+
+class SmdCommClientShellSbBlockMsg(
+    SmdCommClientMsg,
+    name="SHELL_SB_BLOCK",
+    arg_count=0,
+    trailing_binary=True,
+):
+    """
+    Sends a block of data from a sandbox's console.
+    """
+
+class SmdCommServerShellDisconnectedMsg(
+    SmdCommServerMsg,
+    name="SHELL_DISCONNECTED",
+    arg_count=0,
+    trailing_binary=False,
+):
+    """
+    Informs the client that its connection to a sandbox's console has been
+    disconnected.
+    """
+
+class SmdCommServerShellFailedMsg(
+    SmdCommServerMsg,
+    name="SHELL_FAILED",
+    arg_count=0,
+    trailing_binary=False,
+):
+    """
+    Informs the client that a sandbox's console cannot be connected to.
+    """
+
+#########################
+# CONTROL BIDI MESSAGES #
+#########################
+
+class SmdCommBidiNameMsg(
+    SmdCommBidiMsg,
+    name="NAME",
+    arg_count=1,
+    trailing_binary=False,
+):
+    """
+    Specifies the name of a sandbox.
+    """
+
+    def __init__(
+        self,
+        correlation_id: int,
+        arg_list: list[str] | None = None,
+        binary_blob: bytes | None = None,
+    ) -> None:
+        """
+        NAME init function.
+        """
+
+        super().__init__(correlation_id, arg_list, binary_blob)
+        assert arg_list is not None
+        SmdCommon.validate_id(
+            arg_list[0],
+            [SmdValidateType.SANDBOX_NAME],
+            "Sandbox name failed validation",
+        )
+
+class SmdCommBidiDescriptionMsg(
+    SmdCommServerMsg,
+    name="DESCRIPTION",
+    arg_count=1,
+    trailing_binary=False,
+):
+    """
+    Specifies the description of a sandbox.
+    """
+
+    ## There is intentionally no argument validation for this message.
+
+class SmdCommBidiRootVolSizeMsg(
+    SmdCommBidiMsg,
+    name="ROOT_VOL_SIZE",
+    arg_count=1,
+    trailing_binary=False,
+):
+    """
+    Specifies the size of a sandbox's root volume.
+    """
+
+    def __init__(
+        self,
+        correlation_id: int,
+        arg_list: list[str] | None = None,
+        binary_blob: bytes | None = None,
+    ) -> None:
+        """
+        ROOT_VOL_SIZE init function.
+        """
+
+        super().__init__(correlation_id, arg_list, binary_blob)
+        assert arg_list is not None
+        SmdCommon.validate_id(
+            arg_list[0],
+            [SmdValidateType.DECIMAL_INT],
+            "Root volume size failed validation",
+        )
+        vol_size: int = int(arg_list[0])
+        if not 1 <= vol_size <= max_vol_size:
+            raise ValueError("Root volume size out of range")
+
+class SmdCommBidiDataVolSizeMsg(
+    SmdCommBidiMsg,
+    name="DATA_VOL_SIZE",
+    arg_count=1,
+    trailing_binary=False,
+):
+    """
+    Specifies the size of a sandbox's data volume.
+    """
+
+    def __init__(
+        self,
+        correlation_id: int,
+        arg_list: list[str] | None = None,
+        binary_blob: bytes | None = None,
+    ) -> None:
+        """
+        DATA_VOL_SIZE init function.
+        """
+
+        super().__init__(correlation_id, arg_list, binary_blob)
+        assert arg_list is not None
+        SmdCommon.validate_id(
+            arg_list[0],
+            [SmdValidateType.DECIMAL_INT],
+            "Data volume size failed validation",
+        )
+        vol_size: int = int(arg_list[0])
+        if not 1 <= vol_size <= max_vol_size:
+            raise ValueError("Data volume size out of range")
+
+class SmdCommBidiMemoryMsg(
+    SmdCommBidiMsg,
+    name="MEMORY",
+    arg_count=1,
+    trailing_binary=False,
+):
+    """
+    Specifies the size of a sandbox's RAM.
+    """
+
+    def __init__(
+        self,
+        correlation_id: int,
+        arg_list: list[str] | None = None,
+        binary_blob: bytes | None = None,
+    ) -> None:
+        """
+        MEMORY init function.
+        """
+
+        super().__init__(correlation_id, arg_list, binary_blob)
+        assert arg_list is not None
+        SmdCommon.validate_id(
+            arg_list[0],
+            [SmdValidateType.DECIMAL_INT],
+            "Memory size failed validation",
+        )
+        mem_size: int = int(arg_list[0])
+        if not 1 <= mem_size <= max_mem_size:
+            raise ValueError("Memory size out of range")
+
+class SmdCommBidiCpuWeightMsg(
+    SmdCommBidiMsg,
+    name="CPU_WEIGHT",
+    arg_count=1,
+    trailing_binary=False,
+):
+    """
+    Specifies a sandbox's CPU weight.
+    """
+
+    def __init__(
+        self,
+        correlation_id: int,
+        arg_list: list[str] | None = None,
+        binary_blob: bytes | None = None,
+    ) -> None:
+        """
+        CPU_WEIGHT init function.
+        """
+
+        super().__init__(correlation_id, arg_list, binary_blob)
+        assert arg_list is not None
+        SmdCommon.validate_id(
+            arg_list[0],
+            [SmdValidateType.DECIMAL_INT],
+            "CPU weight failed validation",
+        )
+        cpu_weight : int = int(arg_list[0])
+        if not 1 <= cpu_weight <= 10000:
+            raise ValueError("CPU weight out of range")
+
+class SmdCommBidiIoWeightMsg(
+    SmdCommBidiMsg,
+    name="IO_WEIGHT",
+    arg_count=1,
+    trailing_binary=False,
+):
+    """
+    Specifies a sandbox's I/O weight.
+    """
+
+    def __init__(
+        self,
+        correlation_id: int,
+        arg_list: list[str] | None = None,
+        binary_blob: bytes | None = None,
+    ) -> None:
+        """
+        IO_WEIGHT init function.
+        """
+
+        super().__init__(correlation_id, arg_list, binary_blob)
+        assert arg_list is not None
+        SmdCommon.validate_id(
+            arg_list[0],
+            [SmdValidateType.DECIMAL_INT],
+            "IO weight failed validation",
+        )
+        cpu_weight : int = int(arg_list[0])
+        if not 1 <= cpu_weight <= 10000:
+            raise ValueError("IO weight out of range")
+
+class SmdCommBidiAudioEnabledMsg(
+    SmdCommBidiMsg,
+    name="AUDIO_ENABLED",
+    arg_count=1,
+    trailing_binary=False,
+):
+    """
+    Specifies whether a sandbox has audio access.
+    """
+
+    def __init__(
+        self,
+        correlation_id: int,
+        arg_list: list[str] | None = None,
+        binary_blob: bytes | None = None,
+    ) -> None:
+        """
+        AUDIO_ENABLED init function.
+        """
+
+        super().__init__(correlation_id, arg_list, binary_blob)
+        assert arg_list is not None
+        SmdCommon.validate_id(
+            arg_list[0],
+            [SmdValidateType.YN_BOOL],
+            "Bool failed validation",
+        )
+
+class SmdCommBidiWaylandEnabledMsg(
+    SmdCommBidiMsg,
+    name="WAYLAND_ENABLED",
+    arg_count=1,
+    trailing_binary=False,
+):
+    """
+    Specifies whether a sandbox has Wayland access.
+    """
+
+    def __init__(
+        self,
+        correlation_id: int,
+        arg_list: list[str] | None = None,
+        binary_blob: bytes | None = None,
+    ) -> None:
+        """
+        WAYLAND_ENABLED init function.
+        """
+
+        super().__init__(correlation_id, arg_list, binary_blob)
+        assert arg_list is not None
+        SmdCommon.validate_id(
+            arg_list[0],
+            [SmdValidateType.YN_BOOL],
+            "Bool failed validation",
+        )
+
+class SmdCommBidiX11EnabledMsg(
+    SmdCommBidiMsg,
+    name="X11_ENABLED",
+    arg_count=1,
+    trailing_binary=False,
+):
+    """
+    Specifies whether a sandbox has X11 access.
+    """
+
+    def __init__(
+        self,
+        correlation_id: int,
+        arg_list: list[str] | None = None,
+        binary_blob: bytes | None = None,
+    ) -> None:
+        """
+        X11_ENABLED init function.
+        """
+
+        super().__init__(correlation_id, arg_list, binary_blob)
+        assert arg_list is not None
+        SmdCommon.validate_id(
+            arg_list[0],
+            [SmdValidateType.YN_BOOL],
+            "Bool failed validation",
+        )
+
+class SmdCommBidi3dEnabledMsg(
+    SmdCommBidiMsg,
+    name="3D_ENABLED",
+    arg_count=1,
+    trailing_binary=False,
+):
+    """
+    Specifies whether a sandbox has access to the GPU.
+    """
+
+    def __init__(
+        self,
+        correlation_id: int,
+        arg_list: list[str] | None = None,
+        binary_blob: bytes | None = None,
+    ) -> None:
+        """
+        3D_ENABLED init function.
+        """
+
+        super().__init__(correlation_id, arg_list, binary_blob)
+        assert arg_list is not None
+        SmdCommon.validate_id(
+            arg_list[0],
+            [SmdValidateType.YN_BOOL],
+            "Bool failed validation",
+        )
+
+class SmdCommBidiNetworkEnabledMsg(
+    SmdCommBidiMsg,
+    name="NETWORK_ENABLED",
+    arg_count=1,
+    trailing_binary=False,
+):
+    """
+    Specifies whether a sandbox has network access.
+    """
+
+    def __init__(
+        self,
+        correlation_id: int,
+        arg_list: list[str] | None = None,
+        binary_blob: bytes | None = None,
+    ) -> None:
+        """
+        NETWORK_ENABLED init function.
+        """
+
+        super().__init__(correlation_id, arg_list, binary_blob)
+        assert arg_list is not None
+        SmdCommon.validate_id(
+            arg_list[0],
+            [SmdValidateType.YN_BOOL],
+            "Bool failed validation",
+        )
+
+class SmdCommBidiNestedSandboxingEnabledMsg(
+    SmdCommBidiMsg,
+    name="NESTED_SANDBOXING_ENABLED",
+    arg_count=1,
+    trailing_binary=False,
+):
+    """
+    Specifies whether a sandbox is able to create additional user namespace
+    sandboxes within itself.
+    """
+
+    def __init__(
+        self,
+        correlation_id: int,
+        arg_list: list[str] | None = None,
+        binary_blob: bytes | None = None,
+    ) -> None:
+        """
+        NESTED_SANDBOXING_ENABLED init function.
+        """
+
+        super().__init__(correlation_id, arg_list, binary_blob)
+        assert arg_list is not None
+        SmdCommon.validate_id(
+            arg_list[0],
+            [SmdValidateType.YN_BOOL],
+            "Bool failed validation",
+        )
+
+class SmdCommBidiSharedFsoMsg(
+    SmdCommBidiMsg,
+    name="SHARED_FSO",
+    arg_count=3,
+    trailing_binary=False,
+):
+    """
+    Specifies a file or folder shared from the host to the sandbox.
+    """
+
+    def __init__(
+        self,
+        correlation_id: int,
+        arg_list: list[str] | None = None,
+        binary_blob: bytes | None = None,
+    ) -> None:
+        """
+        SHARED_FSO init function.
+        """
+
+        super().__init__(correlation_id, arg_list, binary_blob)
+        assert arg_list is not None
+        SmdCommon.validate_id(
+            arg_list[0],
+            [SmdValidateType.WRITE_STATUS],
+            "Write status failed validation",
+        )
+        SmdCommon.validate_id(
+            arg_list[1],
+            [SmdValidateType.ABSOLUTE_PATH],
+            "Host path failed validation",
+        )
+        SmdCommon.validate_id(
+            arg_list[2],
+            [SmdValidateType.ABSOLUTE_PATH],
+            "Sandbox path failed validation",
+        )
+
+class SmdCommBidiSharedDeviceMsg(
+    SmdCommBidiMsg,
+    name="SHARED_DEVICE",
+    arg_count=1,
+    trailing_binary=False,
+):
+    """
+    Specifies a device shared from the host to the sandbox.
+    """
+
+    def __init__(
+        self,
+        correlation_id: int,
+        arg_list: list[str] | None = None,
+        binary_blob: bytes | None = None,
+    ) -> None:
+        """
+        SHARED_DEVICE init function.
+        """
+
+        super().__init__(correlation_id, arg_list, binary_blob)
+        assert arg_list is not None
+        SmdCommon.validate_id(
+            arg_list[0],
+            [SmdValidateType.ABSOLUTE_PATH],
+            "Device path failed validation",
+        )
+
+class SmdSession:
+    """
+    A connection between the sandbox-manager-dist server and client.
+    """
+
+    def __init__(
+        self,
+        session_socket: socket.socket | None = None,
+        user_name: str | None = None,
+        is_control_session: bool = False,
+    ) -> None:
+        """
+        Session init function.
+        """
+
+        ## Possible argument combinations:
+        ## - session_socket set, user_name set, is_control_session = True:
+        ##   - Illegal, user_name cannot be set when is_control_session is
+        ##     True.
+        ## - session_socket set, user_name set, is_control_session = False:
+        ##   - Legal, server-side comm session, socket passed by
+        ##     SmdServerSocket.get_session.
+        ## - session_socket set, user_name not set, is_control_session = True:
+        ##   - Legal, server-side control session, socket passed by
+        ##     SmdServerSocket.get_session.
+        ## - session_socket set, user_name not set, is_control_session = False:
+        ##   - Illegal, user_name must be set when is_control_session is False.
+        ## - session_socket not set, user_name set, is_control_session = True:
+        ##   - Illegal, user_name cannot be set when is_control_session is True.
+        ## - session_socket not set, user_name set, is_control_session = False:
+        ##   - Legal, client-side comm session, socket created here.
+        ## - session_socket not set, user_name not set, is_control_session
+        ##   = True:
+        ##   - Legal, client-side control session, socket created here.
+        ## - session_socket not set, user_name not set, is_control_session
+        ##   = False:
+        ##   - Illegal, user_name must be set when is_control_session is False.
+
+        self.user_name: str | None
+        self.backend_socket: socket.socket
+        self.is_control_session: bool = is_control_session
+        self.is_server_side: bool = False
+        self.is_session_open: bool = True
+
+        if not is_control_session and user_name is None:
+            raise ValueError(
+                "user_name must be passed if creating a comm session."
+            )
+        if is_control_session and user_name is not None:
+            raise ValueError(
+                "user_name must not be passed when creating a control session."
+            )
+
+        if session_socket is None:
+            ## Client-side
+            self.backend_socket = socket.socket(family=socket.AF_UNIX)
+            if is_control_session:
+                socket_path: Path = SmdCommon.control_path
+            else:
+                assert user_name is not None
+                orig_user_name: str = user_name
+                user_name = SmdCommon.normalize_user_id(user_name)
+                if user_name is None:
+                    raise ValueError(
+                        f"Account '{orig_user_name}' does not exist."
+                    )
+                socket_path = Path(SmdCommon.comm_dir, user_name)
+                if not os.access(socket_path, os.R_OK | os.W_OK):
+                    raise PermissionError(
+                        f"Cannot access '{str(socket_path)}' for reading and "
+                        "writing"
+                    )
+            self.backend_socket.connect(str(socket_path))
+        else:
+            ## Server-side
+            self.is_server_side = True
+            self.backend_socket = session_socket
+
+        self.user_name = user_name
+        self.backend_socket.settimeout(0.1)
+
+    # pylint: disable=too-many-branches
+    def __recv_msg(self) -> bytes:
+        """
+        Receives a low-level message from the backend socket. You should use
+        get_msg() if you want to get an actual message object back. On the
+        client side, this will wait as long as necessary to get all data from
+        the server. On the server side, this will give up on clients that send
+        data too slowly.
+        """
+
+        server_max_loops: int = 5
+        header_len: int = 4
+        recv_buf: bytearray = bytearray()
+
+        while len(recv_buf) != header_len:
+            if self.is_server_side:
+                if server_max_loops == 0:
+                    raise ConnectionAbortedError("Connection is too slow")
+                server_max_loops -= 1
+            try:
+                tmp_buf: bytes = self.backend_socket.recv(header_len)
+            except socket.timeout as e:
+                if self.is_server_side:
+                    raise ConnectionAbortedError("Connection locked up") from e
+                continue
+            if tmp_buf == b"":
+                raise ConnectionAbortedError("Connection unexpectedly closed")
+            header_len -= len(tmp_buf)
+            recv_buf.extend(tmp_buf)
+
+        msg_len: int = int.from_bytes(recv_buf, byteorder="big")
+
+        if self.is_server_side and msg_len > 16384:
+            raise ValueError("Received message is too long")
+
+        recv_buf = bytearray()
+
+        while len(recv_buf) != msg_len:
+            if self.is_server_side:
+                if server_max_loops == 0:
+                    raise ConnectionAbortedError("Connection is too slow")
+                server_max_loops -= 1
+            try:
+                tmp_buf = self.backend_socket.recv(msg_len)
+            except socket.timeout as e:
+                if self.is_server_side:
+                    raise ConnectionAbortedError("Connection locked up") from e
+                continue
+            if tmp_buf == b"":
+                raise ConnectionAbortedError("Connection unexpectedly closed")
+            msg_len -= len(tmp_buf)
+            recv_buf.extend(tmp_buf)
+
+        return bytes(recv_buf)
+
+    ## TODO: PICK UP HERE, write deserialization logic next
+
+class SmdServerSocket:
+    """
+    A server-side listening socket for control and comm connections. Use this
+    only on the server for listening for incoming connections. Both the server
+    and client should use SmdSession objects for actual communication.
+    """
+
+    def __init__(
+        self, socket_type: SmdSocketType, user_name: str | None = None
+    ) -> None:
+        """
+        Server socket init function.
+        """
+
+        self.backend_socket: socket.socket
+        self.socket_type: SmdSocketType
+        self.user_name: str | None = None
+
+        if socket_type == SmdSocketType.CONTROL:
+            if user_name is not None:
+                raise ValueError(
+                    "user-name is only valid with "
+                    "SmdSocketType.COMMUNICATION"
+                )
+            self.backend_socket = socket.socket(family=socket.AF_UNIX)
+            self.backend_socket.bind(str(SmdCommon.control_path))
+            os.chown(SmdCommon.control_path, 0, 0)
+            os.chmod(SmdCommon.control_path, stat.S_IRUSR | stat.S_IWUSR)
+            self.backend_socket.listen(10)
+        else:
+            if user_name is None:
+                raise ValueError(
+                    "user_name must be provided when using "
+                    "SmdSocketType.COMMUNICATION"
+                )
+
+            orig_user_name: str = user_name
+            user_name = SmdCommon.normalize_user_id(user_name)
+            if user_name is None:
+                raise ValueError(f"Account '{orig_user_name}' does not exist.")
+
+            try:
+                user_info: pwd.struct_passwd = pwd.getpwnam(user_name)
+                target_uid: int = user_info.pw_uid
+                target_gid: int = user_info.pw_gid
+            except Exception as e:
+                raise ValueError(
+                    f"Account '{user_name}' does not exist."
+                ) from e
+
+            self.backend_socket = socket.socket(family=socket.AF_UNIX)
+            socket_path: Path = Path(SmdCommon.comm_dir, user_name)
+            self.backend_socket.bind(str(socket_path))
+            os.chown(socket_path, target_uid, target_gid)
+            os.chmod(socket_path, stat.S_IRUSR | stat.S_IWUSR)
+            self.backend_socket.listen(10)
+            self.user_name = user_name
+
+        self.socket_type = socket_type
+
+    def get_session(self) -> SmdSession:
+        """
+        Gets a session from the listening socket. For those used to using
+        sockets directly, this is an analogue to socket.accept().
+        """
+
+        ## socket.accept returns a (socket, address) tuple, we only need the
+        ## socket from this
+        session_socket: socket.socket = self.backend_socket.accept()[0]
+        if self.socket_type == SmdSocketType.CONTROL:
+            return SmdSession(
+                session_socket=session_socket, is_control_session=True
+            )
+
+        assert self.user_name is not None
+        return SmdSession(
+            session_socket=session_socket,
+            user_name=self.user_name,
+            is_control_session=False,
+        )
+
+    def close(self) -> None:
+        """
+        Close the listening socket.
+        """
+
+        self.backend_socket.close()

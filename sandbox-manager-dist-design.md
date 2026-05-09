@@ -194,7 +194,7 @@ If sandboxes exist:
 |                |                 |   Data volume: <10 GiB ^v>                     |
 |                |                 |        Memory: < 2 GiB ^v>                     |
 |                |                 |    CPU weight: <    50 ^v>                     |
-|                |                 |     IO weight: <    50 ^v>                     |
+|                |                 |    I/O weight: <    50 ^v>                     |
 |                |                 |                                                |
 |                |                 |------------------------------------------------|
 |                |                 | Permissions                                    |
@@ -382,7 +382,7 @@ will be "(shutting down)" instead.
 |                |                 |   Data volume: <10 GiB ^v>                             |
 |                |                 |        Memory: < 2 GiB ^v>                             |
 |                |                 |    CPU weight: <    50 ^v>                             |
-|                |                 |     IO weight: <    50 ^v>                             |
+|                |                 |    I/O weight: <    50 ^v>                             |
 |                |                 |                                                        |
 |                |                 |--------------------------------------------------------|
 |                |                 | Permissions                                            |
@@ -587,7 +587,7 @@ displayed.
 |   Data volume: <1 GiB ^v>                      |
 |        Memory: <1 GiB ^v>                      |
 |    CPU weight: <   50 ^v>                      |
-|     IO weight: <   50 ^v>                      |
+|    I/O weight: <   50 ^v>                      |
 |                                                |
 |------------------------------------------------|
 | Permissions                                    |
@@ -776,13 +776,11 @@ displayed.
 +-------------------------------------------+
 | App Info - Sandbox Manager          v ^ X |
 +-------------------------------------------+
-|        Name: _Firefox__________________   |
-| Description: _Web Browser______________   |
-|     Comment: _Fast and private browser_   |
-| Environment: __________________________   |
-|     Program: _firefox__________________   |
-|   Arguments: _%u_______________________   |
-|    Work dir: __________________________   |
+|         Name: _Firefox___________________ |
+| Generic Name: _Web Browser_______________ |
+|      Comment: _Fast and private browser__ |
+|         Exec: _firefox %u________________ |
+|     Work Dir: ___________________________ |
 |                                           |
 | Supported file types:                     |
 | +---------------------------------------+ |
@@ -1739,17 +1737,20 @@ interface directly.
       sandbox. Does not include a binary blob.
     * `EXEC` - Tells the backend to launch an application in the sandbox.
       Introduces a new correlation ID. Takes two arguments; the UUID of the
-      sandbox to launch an application within, and the (absolute or relative)
-      path to the program.  Includes a binary blob, a list of NULL-terminated
-      arguments to pass to the program.
+      sandbox to launch an application within, and the name of the desktop file
+      corresponding to the program to launch.  Includes a binary blob, a list
+      of NULL-terminated file arguments to pass to the desktop file.
     * `SHELL` - Tells the backend to connect the frontend to the sandbox's
       console. Raw, unsanitized bytes will be piped between the sandbox and
       the frontend, it is the frontend's responsibility to do any necessary
       sanitization. Introduces a new correlation ID. Takes one argument, the
-      UUID of the sandbox to shell into. Does not include a binary blob.
+      UUID of the sandbox to shell into. Does not include a binary blob.S
     * `SHELL_HS_BLOCK` - Provides a block of data to the backend to pipe into
       the sandbox shell. Must be correlated to a `SHELL` message. Takes no
       arguments.  Includes a binary blob, the block of data.
+    * `SHELL_DISCONNECT` - Informs the backend that the frontend is
+      disconnecting from the sandbox's shell. Must be correlated to a `SHELL`
+      message. Takes no arguments. Does not include a binary blob.
   * Sent from server to client:
     * `CONFIRM_NEED_RESTART` - Informs the frontend that the backend needs
       restarted to apply pending software updates. Must be correlated to a
@@ -1993,21 +1994,16 @@ interface directly.
     * `APP_INFO_NAME` - Specifies the name of an application. Must be
       correlated to a `GET_APP_INFO_START` message. Takes one argument, the
       application name. Does not include a binary blob.
-    * `APP_INFO_DESCRIPTION` - Specifies the description of an application.
+    * `APP_INFO_GENERIC_NAME` - Specifies the generic name of an application.
       Must be correlated to a `GET_APP_INFO_START` message. Takes one
       argument, the app description. Does not include a binary blob.
     * `APP_INFO_COMMENT` - Specifies an application comment. Must be
       correlated to a `GET_APP_INFO_START` message. Takes one argument, the
       comment string. Does not include a binary blob.
-    * `APP_INFO_ENVIRONMENT` - Specifies an application's environment. Must be
-      correlated to a `GET_APP_INFO_START` message. Takes one argument, the
-      environment string. Does not include a binary blob.
-    * `APP_INFO_PROGRAM` - Specifies the program providing an application. Must
-      be correlated to a `GET_APP_INFO_START` message. Takes one argument, the
-      program string. Does not include a binary blob.
-    * `APP_INFO_ARGUMENTS` - Specifies the arguments to a program providing an
-      application.  Must be correlated to a `GET_APP_INFO_START` message. Takes
-      one argument, the argument string. Does not include a binary blob.
+    * `APP_INFO_EXEC` - Specifies the execution information (environment
+      variables, program, arguments) for an application. Must be correlated to
+      a `GET_APP_INFO_START` message. Takes one argument, the execution string.
+      Does not include a binary blob.
     * `APP_INFO_WORK_DIR` - Specifies the working directory of the program
       providing an application. Must be correlated to a `GET_APP_INFO_START`
       message. Takes one argument, the working dir path. Does not include a
@@ -2035,6 +2031,10 @@ interface directly.
     * `SHELL_SB_BLOCK` - Provides a block of data to the frontend that came
       from the sandbox shell. Must be correlated to a `SHELL_ACK` message.
       Takes no arguments. Includes a binary blob, the block of data.
+    * `SHELL_DISCONNECTED` - Informs the client that its connection to the
+      sandbox's shell has been disconnected. Must be correlated to a
+      `SHELL_ACK` or client-sent `SHELL_DISCONNECT` message. Takes no
+      arguments. Does not include a binary blob.
     * `SHELL_FAILED` - Informs the client that the sandbox's shell could not
       be opened. Must be correlated to a client-sent `SHELL` message. Takes no
       arguments. Does not include a binary blob.
@@ -2042,19 +2042,24 @@ interface directly.
     `CREATE_START`, `CONFIG_START`, or `CONFIG_INFO_START` message, will be
     broadcast to long-running clients if the correlated message is broadcast:
     * `NAME` - Specifies the name of a sandbox. Takes one argument, the name
-      of the VM. Does not include a binary blob.
+      of the sandbox. Does not include a binary blob.
     * `DESCRIPTION` - Specifies the description of a sandbox. Takes one
-      argument; the VM description. Does not include a binary blob.
+      argument; the sandbox description. Does not include a binary blob.
     * `ROOT_VOL_SIZE` - Specifies the size of the sandbox's root volume, in
-      bytes. Takes one argument, the volume size. Does not include a binary
-      blob.
+      bytes. The maximum root volume size is currently 16 TiB - 4096 bytes.
+      Takes one argument, the volume size. Does not include a binary blob.
     * `DATA_VOL_SIZE` - Specifies the size of the sandbox's data volume, in
-      bytes. Takes one argument, the volume size. Does not include a binary
-      blob.
+      bytes. The maximum data volume size is currently 16 TiB - 4096 bytes.
+      Takes one argument, the volume size. Does not include a binary blob.
     * `MEMORY` - Specifies the size of the sandbox's available RAM, in bytes.
-      Takes one argument, the memory size. Does not include a binary blob.
-    * `CPU_WEIGHT` - Specifies the CPU weight of the sandbox. Takes one
-      argument, the CPU weight. Does not include a binary blob.
+      The maximum memory size is currently 1 TB. Takes one argument, the memory
+      size. Does not include a binary blob.
+    * `CPU_WEIGHT` - Specifies the CPU weight of the sandbox. The highest
+      possible CPU weight is 10000. Takes one argument, the CPU weight. Does
+      not include a binary blob.
+    * `IO_WEIGHT` - Specifies the I/O weight of the sandbox.  The highest
+      possible I/O weight is 10000. Takes one argument, the I/O weight. Does
+      not include a binary blob.
     * `AUDIO_ENABLED` - Specifies whether the sandbox has access to the host's
       audio system. Takes one argument, "y" for "yes", and "n" for "no". Does
       not include a binary blob.
@@ -2075,9 +2080,9 @@ interface directly.
       Does not include a binary blob.
     * `SHARED_FSO` - Specifies a folder or file shared from the host to the
       sandbox.  Takes three argument; "RW" or "RO" indicating whether the
-      sandbox should be able to write to the folder path or file on the host,
-      and the folder or file path within the sandbox. Does not include a binary
-      blob.
+      sandbox should be able to write to the file or folder on the host, the
+      path of the file or folder on the host, and the path of the file or
+      folder within the sandbox. Does not include a binary blob.
     * `SHARED_DEVICE` - Specifies a device shared from the host to the sandbox.
       Takes one arguments; the path to the device being shared. Does not
       include a binary blob.
