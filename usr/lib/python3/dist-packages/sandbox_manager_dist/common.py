@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Callable
 from enum import Enum
 
+
 class SmdValidateType(Enum):
     """
     Enum for selecting what kind of value to validate, used by
@@ -28,13 +29,14 @@ class SmdValidateType(Enum):
     SHUTDOWN_MODE = 6
     FILE_PERM = 7
     ABSOLUTE_PATH = 8
-    #RELATIVE_PATH = 9
+    # RELATIVE_PATH = 9
     DESKTOP_FILE = 10
     FILE_TYPE = 11
     FILE_NAME = 12
     DECIMAL_INT = 13
     YN_BOOL = 14
     WRITE_STATUS = 15
+
 
 class SmdSocketType(Enum):
     """
@@ -43,6 +45,7 @@ class SmdSocketType(Enum):
 
     CONTROL = 1
     COMMUNICATION = 2
+
 
 class SmdCommon:
     """
@@ -63,7 +66,7 @@ class SmdCommon:
     shutdown_mode_regex: re.Pattern[str] = re.compile(r"(shutdown|kill)\Z")
     file_perm_regex: re.Pattern[str] = re.compile(r"[0-7]{4}\Z")
     absolute_path_regex: re.Pattern[str] = re.compile(r"/[^\x00]*\Z")
-    #relative_path_regex: re.Pattern[str] = re.compile(r"[^\x00]+\Z")
+    # relative_path_regex: re.Pattern[str] = re.compile(r"[^\x00]+\Z")
     desktop_file_regex: re.Pattern[str] = re.compile(r".+\.desktop\Z")
     file_type_regex: re.Pattern[str] = re.compile(r"(f|d)\Z")
     file_name_regex: re.Pattern[str] = re.compile(r"[^\x00/]+\Z")
@@ -108,7 +111,7 @@ class SmdCommon:
                     target_regex = SmdCommon.file_perm_regex
                 case SmdValidateType.ABSOLUTE_PATH:
                     target_regex = SmdCommon.absolute_path_regex
-                #case SmdValidateType.RELATIVE_PATH:
+                # case SmdValidateType.RELATIVE_PATH:
                 #    target_regex = SmdCommon.relative_path_regex
                 case SmdValidateType.DESKTOP_FILE:
                     target_regex = SmdCommon.desktop_file_regex

@@ -31,9 +31,11 @@ max_mem_size: int = 1024 * 1024 * 1024 * 1024
 # CORE MESSAGE LOGIC #
 ######################
 
+
 class SmdBaseMsg:
     """
     Base class for all message classes. Also stores a lookup list for all
+    subclasses.
     """
 
     registry: list[type["SmdBaseMsg"]] = []
@@ -96,23 +98,31 @@ class SmdBaseMsg:
         ## arguments: argument length + trailing NULL for each arg
         ## binary blob: blob length
         ## The length of the prefix itself doesn't count
-        msg_len: int = 18 + sum(
-            len(x) + 1 for x in binary_arg_list
-        ) + len(self.binary_blob)
+        msg_len: int = (
+            18
+            + sum(len(x) + 1 for x in binary_arg_list)
+            + len(self.binary_blob)
+        )
 
-        out_bytes: bytes = msg_len.to_bytes(
-            length=4,
-            byteorder="big",
-            signed=False,
-        ) + self.msg_code.to_bytes(
-            length=2,
-            byteorder="big",
-            signed=False,
-        ) + self.correlation_id.to_bytes(
-            length=16,
-            byteorder="big",
-            signed=False,
-        ) + b"".join([x + b"\0" for x in binary_arg_list]) + self.binary_blob
+        out_bytes: bytes = (
+            msg_len.to_bytes(
+                length=4,
+                byteorder="big",
+                signed=False,
+            )
+            + self.msg_code.to_bytes(
+                length=2,
+                byteorder="big",
+                signed=False,
+            )
+            + self.correlation_id.to_bytes(
+                length=16,
+                byteorder="big",
+                signed=False,
+            )
+            + b"".join([x + b"\0" for x in binary_arg_list])
+            + self.binary_blob
+        )
 
         ## Add 4 for the length of the prefix
         assert len(out_bytes) == msg_len + 4
@@ -126,7 +136,7 @@ class SmdBaseMsg:
         fails.
         """
 
-        if not 0 <= self.correlation_id <= ((2 ** 128) - 1):
+        if not 0 <= self.correlation_id <= ((2**128) - 1):
             raise ValueError(
                 "Correlation ID out of range for a 128-bit unsigned integer"
             )
@@ -139,35 +149,42 @@ class SmdBaseMsg:
                 f"Binary blob provided to {self.name} but was not expected"
             )
 
+
 class SmdControlClientMsg(SmdBaseMsg, register=False):
     """
     No-op class that groups together client-to-server control messages.
     """
 
-class SmdControlServerMsg(SmdBaseMsg, register = False):
+
+class SmdControlServerMsg(SmdBaseMsg, register=False):
     """
     No-op class that groups together server-to-client control messages.
     """
 
-class SmdCommClientMsg(SmdBaseMsg, register = False):
+
+class SmdCommClientMsg(SmdBaseMsg, register=False):
     """
     No-op class that groups together client-to-server comm messages.
     """
 
-class SmdCommServerMsg(SmdBaseMsg, register = False):
+
+class SmdCommServerMsg(SmdBaseMsg, register=False):
     """
     No-op class that groups together server-to-client comm messages.
     """
 
-class SmdCommBidiMsg(SmdBaseMsg, register = False):
+
+class SmdCommBidiMsg(SmdBaseMsg, register=False):
     """
     No-op class that groups together messages that may be sent from server to
     client or from client to server.
     """
 
+
 ###########################
 # CONTROL CLIENT MESSAGES #
 ###########################
+
 
 class SmdControlClientRegisterMsg(
     SmdControlClientMsg,
@@ -197,6 +214,7 @@ class SmdControlClientRegisterMsg(
             "User ID failed validation",
         )
 
+
 class SmdControlClientUnregisterMsg(
     SmdControlClientMsg,
     name="UNREGISTER",
@@ -225,9 +243,11 @@ class SmdControlClientUnregisterMsg(
             "User ID failed validation",
         )
 
+
 ###########################
 # CONTROL SERVER MESSAGES #
 ###########################
+
 
 class SmdControlServerRegisterSuccessMsg(
     SmdControlServerMsg,
@@ -239,6 +259,7 @@ class SmdControlServerRegisterSuccessMsg(
     Informs the client that comm socket creation has succeeded.
     """
 
+
 class SmdControlServerRegisterExistsMsg(
     SmdControlServerMsg,
     name="REGISTER_EXISTS",
@@ -248,6 +269,7 @@ class SmdControlServerRegisterExistsMsg(
     """
     Informs the client that the comm socket already exists.
     """
+
 
 class SmdControlServerRegisterFailureMsg(
     SmdControlServerMsg,
@@ -259,6 +281,7 @@ class SmdControlServerRegisterFailureMsg(
     Informs the client that the comm socket could not be created.
     """
 
+
 class SmdControlServerUnregisterSuccessMsg(
     SmdControlServerMsg,
     name="UNREGISTER_SUCCESS",
@@ -268,6 +291,7 @@ class SmdControlServerUnregisterSuccessMsg(
     """
     Informs the client that comm socket removal has succeeded.
     """
+
 
 class SmdControlServerUnregisterAbsentMsg(
     SmdControlServerMsg,
@@ -279,6 +303,7 @@ class SmdControlServerUnregisterAbsentMsg(
     Informs the client that the comm socket does not exist.
     """
 
+
 class SmdControlServerUnregisterFailureMsg(
     SmdControlServerMsg,
     name="UNREGISTER_FAILURE",
@@ -289,9 +314,11 @@ class SmdControlServerUnregisterFailureMsg(
     Informs the client that the comm socket could not be removed.
     """
 
+
 ########################
 # COMM CLIENT MESSAGES #
 ########################
+
 
 class SmdCommClientSyncMsg(
     SmdCommClientMsg,
@@ -303,6 +330,7 @@ class SmdCommClientSyncMsg(
     Informs the server that the client is long-lived.
     """
 
+
 class SmdCommClientQueryNeedRestartMsg(
     SmdCommClientMsg,
     name="QUERY_NEED_RESTART",
@@ -313,6 +341,7 @@ class SmdCommClientQueryNeedRestartMsg(
     Asks the server if it needs to be restarted to apply software updates.
     """
 
+
 class SmdCommClientRestartMsg(
     SmdCommClientMsg,
     name="RESTART",
@@ -322,6 +351,7 @@ class SmdCommClientRestartMsg(
     """
     Asks the server to restart itself.
     """
+
 
 class SmdCommClientCreateStartMsg(
     SmdCommClientMsg,
@@ -334,6 +364,7 @@ class SmdCommClientCreateStartMsg(
     sent.
     """
 
+
 class SmdCommClientCreateEndMsg(
     SmdCommClientMsg,
     name="CREATE_END",
@@ -344,6 +375,7 @@ class SmdCommClientCreateEndMsg(
     Informs the server that messages defining a new sandbox have been set and
     asks the backend to create the sandbox.
     """
+
 
 class SmdCommClientConfigStartMsg(
     SmdCommClientMsg,
@@ -374,6 +406,7 @@ class SmdCommClientConfigStartMsg(
             "Sandbox UUID failed validation",
         )
 
+
 class SmdCommClientConfigEndMsg(
     SmdCommClientMsg,
     name="CONFIG_END",
@@ -384,6 +417,7 @@ class SmdCommClientConfigEndMsg(
     Informs the server that messages modifying the configuration of a sandbox
     have been sent and asks the backend to reconfigure the sandbox.
     """
+
 
 class SmdCommClientGetConfigMsg(
     SmdCommClientMsg,
@@ -414,6 +448,7 @@ class SmdCommClientGetConfigMsg(
             "Sandbox UUID failed validation",
         )
 
+
 class SmdCommClientDeleteMsg(
     SmdCommClientMsg,
     name="DELETE",
@@ -441,6 +476,7 @@ class SmdCommClientDeleteMsg(
             [SmdValidateType.UUID],
             "Sandbox UUID failed validation",
         )
+
 
 class SmdCommClientCloneMsg(
     SmdCommClientMsg,
@@ -475,6 +511,7 @@ class SmdCommClientCloneMsg(
             "New sandbox name failed validation",
         )
 
+
 class SmdCommClientBootMsg(
     SmdCommClientMsg,
     name="BOOT",
@@ -508,6 +545,7 @@ class SmdCommClientBootMsg(
             "Boot mode failed validation",
         )
 
+
 class SmdCommClientShutdownMsg(
     SmdCommClientMsg,
     name="SHUTDOWN",
@@ -540,6 +578,7 @@ class SmdCommClientShutdownMsg(
             [SmdValidateType.SHUTDOWN_MODE],
             "Shutdown mode failed validation",
         )
+
 
 class SmdCommClientCreateFileBeginMsg(
     SmdCommClientMsg,
@@ -589,6 +628,7 @@ class SmdCommClientCreateFileBeginMsg(
             "File path failed validation",
         )
 
+
 class SmdCommClientCreateFileBlockMsg(
     SmdCommClientMsg,
     name="CREATE_FILE_BLOCK",
@@ -599,6 +639,7 @@ class SmdCommClientCreateFileBlockMsg(
     Sends a block of a file being created to the server.
     """
 
+
 class SmdCommClientCreateFileEndMsg(
     SmdCommClientMsg,
     name="CREATE_FILE_END",
@@ -608,6 +649,7 @@ class SmdCommClientCreateFileEndMsg(
     """
     Tells the server that all blocks of a file being created have been sent.
     """
+
 
 class SmdCommClientCreateDirMsg(
     SmdCommClientMsg,
@@ -657,6 +699,7 @@ class SmdCommClientCreateDirMsg(
             "Directory path failed validation",
         )
 
+
 class SmdCommClientListDirMsg(
     SmdCommClientMsg,
     name="LIST_DIR",
@@ -689,6 +732,7 @@ class SmdCommClientListDirMsg(
             [SmdValidateType.ABSOLUTE_PATH],
             "Directory path failed validation",
         )
+
 
 class SmdCommClientReadFileMsg(
     SmdCommClientMsg,
@@ -723,6 +767,7 @@ class SmdCommClientReadFileMsg(
             "File path failed validation",
         )
 
+
 class SmdCommClientReadFileAbortMsg(
     SmdCommClientMsg,
     name="READ_FILE_ABORT",
@@ -732,6 +777,7 @@ class SmdCommClientReadFileAbortMsg(
     """
     Tells the server to stop sending a file to the client.
     """
+
 
 class SmdCommClientListAppsMsg(
     SmdCommClientMsg,
@@ -760,6 +806,7 @@ class SmdCommClientListAppsMsg(
             [SmdValidateType.UUID],
             "Sandbox UUID failed validation",
         )
+
 
 class SmdCommClientGetAppInfoMsg(
     SmdCommClientMsg,
@@ -794,6 +841,7 @@ class SmdCommClientGetAppInfoMsg(
             "Desktop file name failed validation",
         )
 
+
 class SmdCommClientExecMsg(
     SmdCommClientMsg,
     name="EXEC",
@@ -827,6 +875,7 @@ class SmdCommClientExecMsg(
             "Desktop file name failed validation",
         )
 
+
 class SmdCommClientShellMsg(
     SmdCommClientMsg,
     name="SHELL",
@@ -855,6 +904,7 @@ class SmdCommClientShellMsg(
             "Sandbox UUID failed validation",
         )
 
+
 class SmdCommServerShellDisconnectMsg(
     SmdCommServerMsg,
     name="SHELL_DISCONNECT",
@@ -866,6 +916,7 @@ class SmdCommServerShellDisconnectMsg(
     console.
     """
 
+
 class SmdCommClientShellHsBlockMsg(
     SmdCommClientMsg,
     name="SHELL_HS_BLOCK",
@@ -876,9 +927,11 @@ class SmdCommClientShellHsBlockMsg(
     Sends a block of data to a sandbox's shell.
     """
 
+
 ########################
 # COMM SERVER MESSAGES #
 ########################
+
 
 class SmdCommServerConfirmNeedRestartMsg(
     SmdCommServerMsg,
@@ -891,6 +944,7 @@ class SmdCommServerConfirmNeedRestartMsg(
     updates.
     """
 
+
 class SmdCommServerDenyNeedRestartMsg(
     SmdCommServerMsg,
     name="DENY_NEED_RESTART",
@@ -900,6 +954,7 @@ class SmdCommServerDenyNeedRestartMsg(
     """
     Informs the client that the server does not need restarted.
     """
+
 
 class SmdCommServerRestartInprogressMsg(
     SmdCommServerMsg,
@@ -911,6 +966,7 @@ class SmdCommServerRestartInprogressMsg(
     Informs the client that the server is restarting.
     """
 
+
 class SmdCommServerRestartDeniedMsg(
     SmdCommServerMsg,
     name="RESTART_DENIED",
@@ -921,6 +977,7 @@ class SmdCommServerRestartDeniedMsg(
     Informs the client that the restart request was denied.
     """
 
+
 class SmdCommServerDupNameMsg(
     SmdCommServerMsg,
     name="DUP_NAME",
@@ -930,6 +987,7 @@ class SmdCommServerDupNameMsg(
     """
     Informs the client that a requested new sandbox name is already in use.
     """
+
 
 class SmdCommServerSandboxRunningMsg(
     SmdCommServerMsg,
@@ -942,6 +1000,7 @@ class SmdCommServerSandboxRunningMsg(
     because the target sandbox is running.
     """
 
+
 class SmdCommServerSandboxNotRunningMsg(
     SmdCommServerMsg,
     name="SANDBOX_NOT_RUNNING",
@@ -953,6 +1012,7 @@ class SmdCommServerSandboxNotRunningMsg(
     because the target sandbox is not running.
     """
 
+
 class SmdCommServerSandboxMissingMsg(
     SmdCommServerMsg,
     name="SANDBOX_MISSING",
@@ -962,6 +1022,7 @@ class SmdCommServerSandboxMissingMsg(
     """
     Informs the client that a referenced sandbox cannot be found.
     """
+
 
 class SmdCommServerConfigInvalidMsg(
     SmdCommServerMsg,
@@ -974,6 +1035,7 @@ class SmdCommServerConfigInvalidMsg(
     sandbox is invalid.
     """
 
+
 class SmdCommServerFsoMissingMsg(
     SmdCommServerMsg,
     name="FSO_MISSING",
@@ -985,6 +1047,7 @@ class SmdCommServerFsoMissingMsg(
     not exist.
     """
 
+
 class SmdCommServerFsoExistsMsg(
     SmdCommServerMsg,
     name="FSO_EXISTS",
@@ -995,6 +1058,7 @@ class SmdCommServerFsoExistsMsg(
     Informs the client that a referenced filesystem object in a sandbox
     already exists.
     """
+
 
 class SmdCommServerCreateInprogressMsg(
     SmdCommServerMsg,
@@ -1024,6 +1088,7 @@ class SmdCommServerCreateInprogressMsg(
             "Sandbox UUID failed validation",
         )
 
+
 class SmdCommServerCreateSuccessMsg(
     SmdCommServerMsg,
     name="CREATE_SUCCESS",
@@ -1034,6 +1099,7 @@ class SmdCommServerCreateSuccessMsg(
     Informs the client that a sandbox has been created.
     """
 
+
 class SmdCommServerCreateFailedMsg(
     SmdCommServerMsg,
     name="CREATE_FAILED",
@@ -1043,6 +1109,7 @@ class SmdCommServerCreateFailedMsg(
     """
     Informs the client that creation of a sandbox failed.
     """
+
 
 class SmdCommServerConfigInprogressMsg(
     SmdCommServerMsg,
@@ -1072,6 +1139,7 @@ class SmdCommServerConfigInprogressMsg(
             "Sandbox UUID failed validation",
         )
 
+
 class SmdCommServerConfigSuccessMsg(
     SmdCommServerMsg,
     name="CONFIG_SUCCESS",
@@ -1082,6 +1150,7 @@ class SmdCommServerConfigSuccessMsg(
     Informs the client that a sandbox has been configured.
     """
 
+
 class SmdCommServerConfigFailedMsg(
     SmdCommServerMsg,
     name="CONFIG_FAILED",
@@ -1091,6 +1160,7 @@ class SmdCommServerConfigFailedMsg(
     """
     Informs the client that configuration of a sandbox failed.
     """
+
 
 class SmdCommServerConfigInfoStartMsg(
     SmdCommServerMsg,
@@ -1103,6 +1173,7 @@ class SmdCommServerConfigInfoStartMsg(
     about to be sent.
     """
 
+
 class SmdCommServerConfigInfoEndMsg(
     SmdCommServerMsg,
     name="CONFIG_INFO_END",
@@ -1113,6 +1184,7 @@ class SmdCommServerConfigInfoEndMsg(
     Informs the client that the server is done sending messages defining a
     sandbox's configuration.
     """
+
 
 class SmdCommServerDeleteInprogressMsg(
     SmdCommServerMsg,
@@ -1142,6 +1214,7 @@ class SmdCommServerDeleteInprogressMsg(
             "Sandbox UUID failed validation",
         )
 
+
 class SmdCommServerDeleteSuccessMsg(
     SmdCommServerMsg,
     name="DELETE_SUCCESS",
@@ -1152,6 +1225,7 @@ class SmdCommServerDeleteSuccessMsg(
     Informs the client that a sandbox has been deleted.
     """
 
+
 class SmdCommServerDeleteFailedMsg(
     SmdCommServerMsg,
     name="DELETE_FAILED",
@@ -1161,6 +1235,7 @@ class SmdCommServerDeleteFailedMsg(
     """
     Informs the client that deletion of a sandbox failed.
     """
+
 
 class SmdCommServerCloneInprogressMsg(
     SmdCommServerMsg,
@@ -1200,6 +1275,7 @@ class SmdCommServerCloneInprogressMsg(
             "Cloned sandbox name failed validation",
         )
 
+
 class SmdCommServerCloneSuccessMsg(
     SmdCommServerMsg,
     name="CLONE_SUCCESS",
@@ -1210,6 +1286,7 @@ class SmdCommServerCloneSuccessMsg(
     Informs the client that a sandbox has been cloned.
     """
 
+
 class SmdCommServerCloneFailedMsg(
     SmdCommServerMsg,
     name="CLONE_FAILED",
@@ -1219,6 +1296,7 @@ class SmdCommServerCloneFailedMsg(
     """
     Informs the client that cloning a sandbox failed.
     """
+
 
 class SmdCommServerBootInprogressMsg(
     SmdCommServerMsg,
@@ -1253,6 +1331,7 @@ class SmdCommServerBootInprogressMsg(
             "Boot mode failed validation",
         )
 
+
 class SmdCommServerBootSuccessMsg(
     SmdCommServerMsg,
     name="BOOT_SUCCESS",
@@ -1263,6 +1342,7 @@ class SmdCommServerBootSuccessMsg(
     Informs the client that a sandbox has been booted.
     """
 
+
 class SmdCommServerBootFailedMsg(
     SmdCommServerMsg,
     name="BOOT_FAILED",
@@ -1272,6 +1352,7 @@ class SmdCommServerBootFailedMsg(
     """
     Informs the client that booting a sandbox failed.
     """
+
 
 class SmdCommServerShutdownInprogressMsg(
     SmdCommServerMsg,
@@ -1306,6 +1387,7 @@ class SmdCommServerShutdownInprogressMsg(
             "Shutdown mode failed validation",
         )
 
+
 class SmdCommServerShutdownSuccessMsg(
     SmdCommServerMsg,
     name="SHUTDOWN_SUCCESS",
@@ -1316,6 +1398,7 @@ class SmdCommServerShutdownSuccessMsg(
     Informs the client that a sandbox has been shut down.
     """
 
+
 class SmdCommServerShutdownFailedMsg(
     SmdCommServerMsg,
     name="SHUTDOWN_FAILED",
@@ -1325,6 +1408,7 @@ class SmdCommServerShutdownFailedMsg(
     """
     Informs the client that shutting down a sandbox failed.
     """
+
 
 class SmdCommServerCreateFileAckMsg(
     SmdCommServerMsg,
@@ -1337,6 +1421,7 @@ class SmdCommServerCreateFileAckMsg(
     server is ready to receive file data.
     """
 
+
 class SmdCommServerCreateFileSuccessMsg(
     SmdCommServerMsg,
     name="CREATE_FILE_SUCCESS",
@@ -1346,6 +1431,7 @@ class SmdCommServerCreateFileSuccessMsg(
     """
     Informs the client that a file has been created in a sandbox.
     """
+
 
 class SmdCommServerCreateFileFailedMsg(
     SmdCommServerMsg,
@@ -1357,6 +1443,7 @@ class SmdCommServerCreateFileFailedMsg(
     Informs the client that a file creation operation failed.
     """
 
+
 class SmdCommServerCreateDirSuccessMsg(
     SmdCommServerMsg,
     name="CREATE_DIR_SUCCESS",
@@ -1366,6 +1453,7 @@ class SmdCommServerCreateDirSuccessMsg(
     """
     Informs the client that a directory has been created in a sandbox.
     """
+
 
 class SmdCommServerCreateDirFailedMsg(
     SmdCommServerMsg,
@@ -1377,6 +1465,7 @@ class SmdCommServerCreateDirFailedMsg(
     Informs the client that a directory creation operation failed.
     """
 
+
 class SmdCommServerListDirStartMsg(
     SmdCommServerMsg,
     name="LIST_DIR_START",
@@ -1387,6 +1476,7 @@ class SmdCommServerListDirStartMsg(
     Informs the client that messages defining a directory's metadata and its
     directory listing are about to be sent.
     """
+
 
 class SmdCommServerListDirEntry(
     SmdCommServerMsg,
@@ -1437,6 +1527,7 @@ class SmdCommServerListDirEntry(
             "File/dir name failed validatoin",
         )
 
+
 class SmdCommServerListDirEndMsg(
     SmdCommServerMsg,
     name="LIST_DIR_END",
@@ -1448,6 +1539,7 @@ class SmdCommServerListDirEndMsg(
     directory listing are done being sent.
     """
 
+
 class SmdCommServerListDirFailedMsg(
     SmdCommServerMsg,
     name="LIST_DIR_FAILED",
@@ -1457,6 +1549,7 @@ class SmdCommServerListDirFailedMsg(
     """
     Informs the client that listing a directory failed.
     """
+
 
 class SmdCommServerReadFileStartMsg(
     SmdCommServerMsg,
@@ -1497,6 +1590,7 @@ class SmdCommServerReadFileStartMsg(
             "File/dir permissions failed validation",
         )
 
+
 class SmdCommServerReadFileBlockMsg(
     SmdCommServerMsg,
     name="READ_FILE_BLOCK",
@@ -1507,6 +1601,7 @@ class SmdCommServerReadFileBlockMsg(
     Provides a block of a file to the client.
     """
 
+
 class SmdCommServerReadFileEndMsg(
     SmdCommServerMsg,
     name="READ_FILE_END",
@@ -1516,6 +1611,7 @@ class SmdCommServerReadFileEndMsg(
     """
     Informs the client that a file has been fully sent.
     """
+
 
 class SmdCommServerReadFileAbortAckMsg(
     SmdCommServerMsg,
@@ -1528,6 +1624,7 @@ class SmdCommServerReadFileAbortAckMsg(
     no further blocks of a file will be sent.
     """
 
+
 class SmdCommServerReadFileFailedMsg(
     SmdCommServerMsg,
     name="READ_FILE_FAILED",
@@ -1538,6 +1635,7 @@ class SmdCommServerReadFileFailedMsg(
     Informs the client that the file read operation failed.
     """
 
+
 class SmdCommServerListAppsStartMsg(
     SmdCommServerMsg,
     name="LIST_APPS_START",
@@ -1547,6 +1645,7 @@ class SmdCommServerListAppsStartMsg(
     """
     Informs the client that the server is about to send an application list.
     """
+
 
 class SmdCommServerListAppsEntryMsg(
     SmdCommServerMsg,
@@ -1578,6 +1677,7 @@ class SmdCommServerListAppsEntryMsg(
             "Desktop file name failed validation",
         )
 
+
 class SmdCommServerListAppsEndMsg(
     SmdCommServerMsg,
     name="LIST_APPS_END",
@@ -1587,6 +1687,7 @@ class SmdCommServerListAppsEndMsg(
     """
     Informs the client that the server is done sending an application list.
     """
+
 
 class SmdCommServerListAppsFailedMsg(
     SmdCommServerMsg,
@@ -1598,6 +1699,7 @@ class SmdCommServerListAppsFailedMsg(
     Informs the client that the app listing operation failed.
     """
 
+
 class SmdCommServerGetAppInfoStartMsg(
     SmdCommServerMsg,
     name="GET_APP_INFO_START",
@@ -1608,6 +1710,7 @@ class SmdCommServerGetAppInfoStartMsg(
     Informs the client that messages defining an application's info are about
     to be sent.
     """
+
 
 class SmdCommServerAppInfoNameMsg(
     SmdCommServerMsg,
@@ -1621,6 +1724,7 @@ class SmdCommServerAppInfoNameMsg(
 
     ## There is intentionally no argument validation for this message.
 
+
 class SmdCommServerAppInfoGenericNameMsg(
     SmdCommServerMsg,
     name="APP_INFO_GENERIC_NAME",
@@ -1633,6 +1737,7 @@ class SmdCommServerAppInfoGenericNameMsg(
 
     ## There is intentionally no argument validation for this message.
 
+
 class SmdCommServerAppInfoCommentMsg(
     SmdCommServerMsg,
     name="APP_INFO_COMMENT",
@@ -1644,6 +1749,7 @@ class SmdCommServerAppInfoCommentMsg(
     """
 
     ## There is intentionally no argument validation for this message.
+
 
 class SmdCommServerAppInfoExecMsg(
     SmdCommServerMsg,
@@ -1660,6 +1766,7 @@ class SmdCommServerAppInfoExecMsg(
     ## desktop files entirely within the sandbox, so there is theoretically no
     ## risk to the host from not validating this.
 
+
 class SmdCommServerAppInfoWorkDirMsg(
     SmdCommServerMsg,
     name="APP_INFO_WORK_DIR",
@@ -1671,6 +1778,7 @@ class SmdCommServerAppInfoWorkDirMsg(
     """
 
     ## There is intentionally no argument validation for this message.
+
 
 class SmdCommServerAppInfoMimetypeMsg(
     SmdCommServerMsg,
@@ -1684,6 +1792,7 @@ class SmdCommServerAppInfoMimetypeMsg(
 
     ## There is intentionally no argument validation for this message.
 
+
 class SmdCommServerGetAppInfoEndMsg(
     SmdCommServerMsg,
     name="GET_APP_INFO_END",
@@ -1695,6 +1804,7 @@ class SmdCommServerGetAppInfoEndMsg(
     sent.
     """
 
+
 class SmdCommServerGetAppInfoFailedMsg(
     SmdCommServerMsg,
     name="GET_APP_INFO_FAILED",
@@ -1704,6 +1814,7 @@ class SmdCommServerGetAppInfoFailedMsg(
     """
     Informs the client that getting an application's info failed.
     """
+
 
 class SmdCommServerExecSuccessMsg(
     SmdCommServerMsg,
@@ -1715,6 +1826,7 @@ class SmdCommServerExecSuccessMsg(
     Informs the client that an application has been successfully executed.
     """
 
+
 class SmdCommServerExecFailedMsg(
     SmdCommServerMsg,
     name="EXEC_FAILED",
@@ -1724,6 +1836,7 @@ class SmdCommServerExecFailedMsg(
     """
     Informs the client that an application could not be executed.
     """
+
 
 class SmdCommServerShellAckMsg(
     SmdCommServerMsg,
@@ -1736,6 +1849,7 @@ class SmdCommServerShellAckMsg(
     accepted.
     """
 
+
 class SmdCommClientShellSbBlockMsg(
     SmdCommClientMsg,
     name="SHELL_SB_BLOCK",
@@ -1745,6 +1859,7 @@ class SmdCommClientShellSbBlockMsg(
     """
     Sends a block of data from a sandbox's console.
     """
+
 
 class SmdCommServerShellDisconnectedMsg(
     SmdCommServerMsg,
@@ -1757,6 +1872,7 @@ class SmdCommServerShellDisconnectedMsg(
     disconnected.
     """
 
+
 class SmdCommServerShellFailedMsg(
     SmdCommServerMsg,
     name="SHELL_FAILED",
@@ -1767,9 +1883,11 @@ class SmdCommServerShellFailedMsg(
     Informs the client that a sandbox's console cannot be connected to.
     """
 
+
 #########################
 # CONTROL BIDI MESSAGES #
 #########################
+
 
 class SmdCommBidiNameMsg(
     SmdCommBidiMsg,
@@ -1799,6 +1917,7 @@ class SmdCommBidiNameMsg(
             "Sandbox name failed validation",
         )
 
+
 class SmdCommBidiDescriptionMsg(
     SmdCommServerMsg,
     name="DESCRIPTION",
@@ -1810,6 +1929,7 @@ class SmdCommBidiDescriptionMsg(
     """
 
     ## There is intentionally no argument validation for this message.
+
 
 class SmdCommBidiRootVolSizeMsg(
     SmdCommBidiMsg,
@@ -1842,6 +1962,7 @@ class SmdCommBidiRootVolSizeMsg(
         if not 1 <= vol_size <= max_vol_size:
             raise ValueError("Root volume size out of range")
 
+
 class SmdCommBidiDataVolSizeMsg(
     SmdCommBidiMsg,
     name="DATA_VOL_SIZE",
@@ -1872,6 +1993,7 @@ class SmdCommBidiDataVolSizeMsg(
         vol_size: int = int(arg_list[0])
         if not 1 <= vol_size <= max_vol_size:
             raise ValueError("Data volume size out of range")
+
 
 class SmdCommBidiMemoryMsg(
     SmdCommBidiMsg,
@@ -1904,6 +2026,7 @@ class SmdCommBidiMemoryMsg(
         if not 1 <= mem_size <= max_mem_size:
             raise ValueError("Memory size out of range")
 
+
 class SmdCommBidiCpuWeightMsg(
     SmdCommBidiMsg,
     name="CPU_WEIGHT",
@@ -1931,9 +2054,44 @@ class SmdCommBidiCpuWeightMsg(
             [SmdValidateType.DECIMAL_INT],
             "CPU weight failed validation",
         )
-        cpu_weight : int = int(arg_list[0])
+        cpu_weight: int = int(arg_list[0])
         if not 1 <= cpu_weight <= 10000:
             raise ValueError("CPU weight out of range")
+
+
+class SmdCommBidiCpuCoresMdg(
+    SmdCommBidiMsg,
+    name="CPU_CORES",
+    arg_count=1,
+    trailing_binary=False,
+):
+    """
+    Specifies a sandbox's CPU core count. (Note that this is unused when using
+    namespace-based sandboxing; it is intended for use with VM-based
+    sandboxing in place of CPU_WEIGHT.)
+    """
+
+    def __init__(
+        self,
+        correlation_id: int,
+        arg_list: list[str] | None = None,
+        binary_blob: bytes | None = None,
+    ) -> None:
+        """
+        CPU_CORES init function.
+        """
+
+        super().__init__(correlation_id, arg_list, binary_blob)
+        assert arg_list is not None
+        SmdCommon.validate_id(
+            arg_list[0],
+            [SmdValidateType.DECIMAL_INT],
+            "CPU weight failed validation",
+        )
+        cpu_cores: int = int(arg_list[0])
+        if not 1 <= cpu_cores <= 256:
+            raise ValueError("CPU cores out of range")
+
 
 class SmdCommBidiIoWeightMsg(
     SmdCommBidiMsg,
@@ -1962,9 +2120,10 @@ class SmdCommBidiIoWeightMsg(
             [SmdValidateType.DECIMAL_INT],
             "IO weight failed validation",
         )
-        cpu_weight : int = int(arg_list[0])
+        cpu_weight: int = int(arg_list[0])
         if not 1 <= cpu_weight <= 10000:
             raise ValueError("IO weight out of range")
+
 
 class SmdCommBidiAudioEnabledMsg(
     SmdCommBidiMsg,
@@ -1994,6 +2153,7 @@ class SmdCommBidiAudioEnabledMsg(
             "Bool failed validation",
         )
 
+
 class SmdCommBidiWaylandEnabledMsg(
     SmdCommBidiMsg,
     name="WAYLAND_ENABLED",
@@ -2021,6 +2181,7 @@ class SmdCommBidiWaylandEnabledMsg(
             [SmdValidateType.YN_BOOL],
             "Bool failed validation",
         )
+
 
 class SmdCommBidiX11EnabledMsg(
     SmdCommBidiMsg,
@@ -2050,6 +2211,7 @@ class SmdCommBidiX11EnabledMsg(
             "Bool failed validation",
         )
 
+
 class SmdCommBidi3dEnabledMsg(
     SmdCommBidiMsg,
     name="3D_ENABLED",
@@ -2077,6 +2239,7 @@ class SmdCommBidi3dEnabledMsg(
             [SmdValidateType.YN_BOOL],
             "Bool failed validation",
         )
+
 
 class SmdCommBidiNetworkEnabledMsg(
     SmdCommBidiMsg,
@@ -2106,6 +2269,7 @@ class SmdCommBidiNetworkEnabledMsg(
             "Bool failed validation",
         )
 
+
 class SmdCommBidiNestedSandboxingEnabledMsg(
     SmdCommBidiMsg,
     name="NESTED_SANDBOXING_ENABLED",
@@ -2134,6 +2298,7 @@ class SmdCommBidiNestedSandboxingEnabledMsg(
             [SmdValidateType.YN_BOOL],
             "Bool failed validation",
         )
+
 
 class SmdCommBidiSharedFsoMsg(
     SmdCommBidiMsg,
@@ -2173,6 +2338,7 @@ class SmdCommBidiSharedFsoMsg(
             "Sandbox path failed validation",
         )
 
+
 class SmdCommBidiSharedDeviceMsg(
     SmdCommBidiMsg,
     name="SHARED_DEVICE",
@@ -2200,6 +2366,7 @@ class SmdCommBidiSharedDeviceMsg(
             [SmdValidateType.ABSOLUTE_PATH],
             "Device path failed validation",
         )
+
 
 class SmdSession:
     """
@@ -2280,6 +2447,11 @@ class SmdSession:
             self.backend_socket = session_socket
 
         self.user_name = user_name
+
+        ## We intentionally set a socket timeout even though the ocnnection
+        ## between the client and server is expected to be long-lived. poll()
+        ## can be used to determine if data is coming or not, but once the
+        ## data is coming, it should be there immediately or at least soon.
         self.backend_socket.settimeout(0.1)
 
     # pylint: disable=too-many-branches
@@ -2337,7 +2509,100 @@ class SmdSession:
 
         return bytes(recv_buf)
 
-    ## TODO: PICK UP HERE, write deserialization logic next
+    @staticmethod
+    def __deserialize_msg(msg_bytes: bytes) -> SmdBaseMsg:
+        """
+        Converts a message in binary form into a message object.
+        """
+
+        ## message code = 2 bytes, correlation ID = 16 bytes, that's the
+        ## entirety of messages that lack arguments and a binary blob.
+        if len(msg_bytes) < 18:
+            raise ValueError("Message too short for any message type!")
+
+        msg_code: int = int.from_bytes(
+            msg_bytes[:2], byteorder="big", signed=False
+        )
+        if msg_code >= len(SmdBaseMsg.registry):
+            raise ValueError("Message code out of bounds!")
+
+        correlation_id: int = int.from_bytes(
+            msg_bytes[2:18], byteorder="big", signed=False
+        )
+
+        msg_type: type["SmdBaseMsg"] = SmdBaseMsg.registry[msg_code]
+        arg_and_blob_list: list[bytes] = msg_bytes[18:].split(
+            b"\0", maxsplit=msg_type.arg_count
+        )
+        actual_arg_count = len(arg_and_blob_list) - 1
+
+        if actual_arg_count < msg_type.arg_count:
+            raise ValueError(
+                f"Insufficient arguments for message '{msg_type.name}', "
+                + f"expected {msg_type.arg_count} arguments, got "
+                + f"{actual_arg_count}"
+            )
+        if actual_arg_count > msg_type.arg_count:
+            raise ValueError(
+                f"Too many arguments for message '{msg_type.name}', "
+                + f"expected {msg_type.arg_count} arguments, got "
+                + f"{actual_arg_count}"
+            )
+
+        if msg_type.trailing_binary and arg_and_blob_list[-1] == b"":
+            raise ValueError(
+                f"Missing binary blob for message '{msg_type.name}'"
+            )
+        if not msg_type.trailing_binary and arg_and_blob_list[-1] != b"":
+            raise ValueError(
+                f"Unexpected binary blob for message '{msg_type.name}'"
+            )
+
+        msg_obj: SmdBaseMsg = msg_type(
+            correlation_id,
+            [x.decode("utf-8") for x in arg_and_blob_list[:-1]],
+            arg_and_blob_list[-1],
+        )
+        return msg_obj
+
+    def get_msg(self) -> SmdBaseMsg:
+        """
+        Gets a message from the server, deserializes it, and ensures it is
+        appropriate for the receiver.
+        """
+
+        msg_bytes: bytes = self.__recv_msg()
+        msg: SmdBaseMsg = self.__deserialize_msg(msg_bytes)
+        if self.is_control_session and not self.is_server_side:
+            if not isinstance(msg, SmdControlClientMsg):
+                raise ConnectionError(
+                    "Control client received an inappropriate message: "
+                    + f"'{str(type(msg))}'"
+                )
+        if self.is_control_session and self.is_server_side:
+            if not isinstance(msg, SmdControlServerMsg):
+                raise ConnectionError(
+                    "Control server received an inappropriate message: "
+                    + f"'{str(type(msg))}'"
+                )
+        if not self.is_control_session and not self.is_server_side:
+            if not isinstance(msg, SmdCommClientMsg) and not isinstance(
+                msg, SmdCommBidiMsg
+            ):
+                raise ConnectionError(
+                    "Comm client received an inappropriate message: "
+                    + f"'{str(type(msg))}'"
+                )
+        if not self.is_control_session and self.is_server_side:
+            if not isinstance(msg, SmdCommServerMsg) and not isinstance(
+                msg, SmdCommBidiMsg
+            ):
+                raise ConnectionError(
+                    "Comm server received an inappropriate message: "
+                    + f"'{str(type(msg))}'"
+                )
+        return msg
+
 
 class SmdServerSocket:
     """

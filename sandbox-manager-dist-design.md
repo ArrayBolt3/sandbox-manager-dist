@@ -2057,6 +2057,10 @@ interface directly.
     * `CPU_WEIGHT` - Specifies the CPU weight of the sandbox. The highest
       possible CPU weight is 10000. Takes one argument, the CPU weight. Does
       not include a binary blob.
+    * `CPU_CORES` - Specifies the number of CPU cores the sandbox is
+      allocated. Only supported for VM-based sandbox isolation. The highest
+      possible core count is 256. Takes one argument, the core count. Does not
+      include a binary blob.
     * `IO_WEIGHT` - Specifies the I/O weight of the sandbox.  The highest
       possible I/O weight is 10000. Takes one argument, the I/O weight. Does
       not include a binary blob.
@@ -2161,5 +2165,18 @@ interface directly.
     devices.  Audio, Wayland, X11 integration, installed application detection,
     and launching of specific applications can probably be done using vsock
     networking.
+  * Waypipe can be used to give Wayland apps access to the host compositor,
+    but this actually increases the attack surface beyond the already large
+    attack surface present when allowing apps to connect directly to a
+    compositor. See
+    https://man.archlinux.org/man/extra/waypipe/waypipe.1.en#SECURITY. While
+    it is arch-specific code, it might (?) be more secure and still
+    semi-practical to rip off Google's Sommelier compositor
+    (https://man.archlinux.org/man/extra/waypipe/waypipe.1.en#SECURITY) and
+    use that instead.
   * We should still try to design this with the features of systemd-vmspawn in
     mind for in the future.
+  * We might be able to implement this even without systemd-vmspawn if we are
+    willing to use QEMU directly. systemd-vmspawn is itself a QEMU wrapper,
+    and it isn't all that similar to systemd-nspawn, so this might not be
+    unreasonable.
