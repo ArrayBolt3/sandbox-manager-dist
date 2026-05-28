@@ -1499,6 +1499,11 @@ interface directly.
       massive amounts of disk space without exceeding a disk quota.
   * Let's restrict what users can access the sandbox backend similar to how we
     restrict access to privleapd. It meaningfully reduces attack surface.
+* Should we forcibly shut down all sandboxes for a user when the control
+  socket is closed?
+  * From an attack surface perspective, it probably makes sense to do this.
+    Users don't expect some of their applications to continue running after
+    they log out.
 * Should we split parts of privleap out into Python libraries so we can share
   code between the various components?
   * The IPC protocol used by privleap is particularly attractive, as it embeds
@@ -1744,7 +1749,7 @@ interface directly.
       console. Raw, unsanitized bytes will be piped between the sandbox and
       the frontend, it is the frontend's responsibility to do any necessary
       sanitization. Introduces a new correlation ID. Takes one argument, the
-      UUID of the sandbox to shell into. Does not include a binary blob.S
+      UUID of the sandbox to shell into. Does not include a binary blob.
     * `SHELL_HS_BLOCK` - Provides a block of data to the backend to pipe into
       the sandbox shell. Must be correlated to a `SHELL` message. Takes no
       arguments.  Includes a binary blob, the block of data.

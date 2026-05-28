@@ -2454,6 +2454,28 @@ class SmdSession:
         ## data is coming, it should be there immediately or at least soon.
         self.backend_socket.settimeout(0.1)
 
+    def close_session(self) -> None:
+        """
+        Closes the session. No further messages can be sent by either side
+        once this is called.
+        """
+
+        self.backend_socket.shutdown(socket.SHUT_RDWR)
+        self.backend_socket.close()
+        self.is_session_open = False
+
+    def __abort_connection(self, msg: str, e: Exception | None) -> None:
+        """
+        Closes the connection and raises a ConnectionAbortedError with the
+        specified message.
+        """
+
+        self.close_session()
+        if e is None:
+            raise ConnectionAbortedError(msg)
+        else:
+            raise ConnectionAbortedError(msg) from e
+
     # pylint: disable=too-many-branches
     def __recv_msg(self) -> bytes:
         """
@@ -2471,46 +2493,67 @@ class SmdSession:
         while len(recv_buf) != header_len:
             if self.is_server_side:
                 if server_max_loops == 0:
-                    raise ConnectionAbortedError("Connection is too slow")
+                    self.__abort_connection("Connection is too slow")
                 server_max_loops -= 1
             try:
                 tmp_buf: bytes = self.backend_socket.recv(header_len)
             except socket.timeout as e:
                 if self.is_server_side:
-                    raise ConnectionAbortedError("Connection locked up") from e
+                    self.__abort_connection("Connection locked up", e)
                 continue
             if tmp_buf == b"":
-                raise ConnectionAbortedError("Connection unexpectedly closed")
+                raise self.__abort_connection("Connection unexpectedly closed")
             header_len -= len(tmp_buf)
             recv_buf.extend(tmp_buf)
 
         msg_len: int = int.from_bytes(recv_buf, byteorder="big")
 
         if self.is_server_side and msg_len > 16384:
-            raise ValueError("Received message is too long")
+            self.__abort_connection("Received message is too long")
 
         recv_buf = bytearray()
 
         while len(recv_buf) != msg_len:
             if self.is_server_side:
                 if server_max_loops == 0:
-                    raise ConnectionAbortedError("Connection is too slow")
+                    self.__abort_connection("Connection is too slow")
                 server_max_loops -= 1
             try:
                 tmp_buf = self.backend_socket.recv(msg_len)
             except socket.timeout as e:
                 if self.is_server_side:
-                    raise ConnectionAbortedError("Connection locked up") from e
+                    self.__abort_connection("Connection locked up", e)
                 continue
             if tmp_buf == b"":
-                raise ConnectionAbortedError("Connection unexpectedly closed")
+                self.__abort_connection("Connection unexpectedly closed")
             msg_len -= len(tmp_buf)
             recv_buf.extend(tmp_buf)
 
         return bytes(recv_buf)
 
-    @staticmethod
-    def __deserialize_msg(msg_bytes: bytes) -> SmdBaseMsg:
+    def __send_msg(self, msg_obj: SmdBaseMsg) -> None:
+        """
+        Sends a message to the remote client or server. This does not validate
+        that the message being sent is appropriate coming from the sender; you
+        should use send_msg() instead.
+        """
+
+        msg_bytes: bytes = msg_obj.serialize()
+        msg_len_bytes: bytes = len(msg_bytes).to_bytes(
+            4, byteorder="big", signed=False
+        )
+        msg_payload: bytes = msg_len_bytes + msg_bytes
+        msg_payload_len: int = len(msg_payload)
+        msg_payload_sent: int = 0
+        while msg_payload_send < msg_payload_len:
+            msg_sent: int = self.backend_socket.send(
+                msg_payload[msg_payload_sent:]
+            )
+            if msg_sent == 0:
+                self.__abort_connection("Connection unexpectedly closed")
+            msg_payload_sent += msg_sent
+
+    def __deserialize_msg(self, msg_bytes: bytes) -> SmdBaseMsg:
         """
         Converts a message in binary form into a message object.
         """
@@ -2518,13 +2561,15 @@ class SmdSession:
         ## message code = 2 bytes, correlation ID = 16 bytes, that's the
         ## entirety of messages that lack arguments and a binary blob.
         if len(msg_bytes) < 18:
-            raise ValueError("Message too short for any message type!")
+            self.__abort_connection("Message too short for any message type!")
 
         msg_code: int = int.from_bytes(
             msg_bytes[:2], byteorder="big", signed=False
         )
         if msg_code >= len(SmdBaseMsg.registry):
-            raise ValueError("Message code out of bounds!")
+            self.__abort_connection(
+                f"Message code '{msg_code}' out of bounds!"
+            )
 
         correlation_id: int = int.from_bytes(
             msg_bytes[2:18], byteorder="big", signed=False
@@ -2537,71 +2582,125 @@ class SmdSession:
         actual_arg_count = len(arg_and_blob_list) - 1
 
         if actual_arg_count < msg_type.arg_count:
-            raise ValueError(
+            self.__abort_connection(
                 f"Insufficient arguments for message '{msg_type.name}', "
                 + f"expected {msg_type.arg_count} arguments, got "
                 + f"{actual_arg_count}"
             )
         if actual_arg_count > msg_type.arg_count:
-            raise ValueError(
+            self.__abort_connection(
                 f"Too many arguments for message '{msg_type.name}', "
                 + f"expected {msg_type.arg_count} arguments, got "
                 + f"{actual_arg_count}"
             )
 
         if msg_type.trailing_binary and arg_and_blob_list[-1] == b"":
-            raise ValueError(
+            self.__abort_connection(
                 f"Missing binary blob for message '{msg_type.name}'"
             )
         if not msg_type.trailing_binary and arg_and_blob_list[-1] != b"":
-            raise ValueError(
+            self.__abort_connection(
                 f"Unexpected binary blob for message '{msg_type.name}'"
             )
 
-        msg_obj: SmdBaseMsg = msg_type(
-            correlation_id,
-            [x.decode("utf-8") for x in arg_and_blob_list[:-1]],
-            arg_and_blob_list[-1],
-        )
+        try:
+            msg_obj: SmdBaseMsg = msg_type(
+                correlation_id,
+                [x.decode("utf-8") for x in arg_and_blob_list[:-1]],
+                arg_and_blob_list[-1],
+            )
+        except Exception as e:
+            self.__abort_connection(
+                f"Validation error while processing message '{msg_type.name}'",
+                e,
+            )
         return msg_obj
 
     def get_msg(self) -> SmdBaseMsg:
         """
-        Gets a message from the server, deserializes it, and ensures it is
-        appropriate for the receiver.
+        Gets a message from the remote client or server, deserializes it, and
+        ensures it is appropriate for the receiver.
         """
+
+        if not self.is_session_open:
+            raise IOError("Session is closed")
 
         msg_bytes: bytes = self.__recv_msg()
         msg: SmdBaseMsg = self.__deserialize_msg(msg_bytes)
+
+        ## We're on the receiving end, so servers expect to receive client
+        ## messages, and clients expect to receive server messages.
+        if self.is_control_session and self.is_server_side:
+            if not isinstance(msg, SmdControlClientMsg):
+                self.__abort_connection(
+                    "Control server received an inappropriate message: "
+                    + f"'{str(type(msg))}'"
+                )
+        if self.is_control_session and not self.is_server_side:
+            if not isinstance(msg, SmdControlServerMsg):
+                self.__abort_connection(
+                    "Control client received an inappropriate message: "
+                    + f"'{str(type(msg))}'"
+                )
+        if not self.is_control_session and self.is_server_side:
+            if not isinstance(msg, SmdCommClientMsg) and not isinstance(
+                msg, SmdCommBidiMsg
+            ):
+                self.__abort_connection(
+                    "Comm server received an inappropriate message: "
+                    + f"'{str(type(msg))}'"
+                )
+        if not self.is_control_session and not self.is_server_side:
+            if not isinstance(msg, SmdCommServerMsg) and not isinstance(
+                msg, SmdCommBidiMsg
+            ):
+                self.__abort_connection(
+                    "Comm client received an inappropriate message: "
+                    + f"'{str(type(msg))}'"
+                )
+        return msg
+
+    def send_msg(self, msg_obj: SmdBaseMsg) -> None:
+        """
+        Sends a message to the remote client or server. Validates that the
+        message being sent is appropriate coming from the sender.
+        """
+
+        if not self.is_session_open:
+            raise IOError("Session is closed")
+
+        ## We're on the sending end, so servers expect to send server
+        ## messages, and clients expect to send client messages.
         if self.is_control_session and not self.is_server_side:
             if not isinstance(msg, SmdControlClientMsg):
-                raise ConnectionError(
-                    "Control client received an inappropriate message: "
+                self.__abort_connection(
+                    "Control client tried to send an inappropriate message: "
                     + f"'{str(type(msg))}'"
                 )
         if self.is_control_session and self.is_server_side:
             if not isinstance(msg, SmdControlServerMsg):
-                raise ConnectionError(
-                    "Control server received an inappropriate message: "
+                self.__abort_connection(
+                    "Control server tried to send an inappropriate message: "
                     + f"'{str(type(msg))}'"
                 )
         if not self.is_control_session and not self.is_server_side:
             if not isinstance(msg, SmdCommClientMsg) and not isinstance(
                 msg, SmdCommBidiMsg
             ):
-                raise ConnectionError(
-                    "Comm client received an inappropriate message: "
+                self.__abort_connection(
+                    "Comm client tried to send an inappropriate message: "
                     + f"'{str(type(msg))}'"
                 )
         if not self.is_control_session and self.is_server_side:
             if not isinstance(msg, SmdCommServerMsg) and not isinstance(
                 msg, SmdCommBidiMsg
             ):
-                raise ConnectionError(
-                    "Comm server received an inappropriate message: "
+                self.__abort_connection(
+                    "Comm server tried to send an inappropriate message: "
                     + f"'{str(type(msg))}'"
                 )
-        return msg
+
+        self.__send_msg(msg_obj)
 
 
 class SmdServerSocket:
