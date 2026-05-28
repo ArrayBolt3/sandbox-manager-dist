@@ -6,5 +6,5 @@
 import sys
 sys.dont_write_bytecode = True
 
-from sandbox_manager_dist import sandbox_manager_dist_frontend
-sandbox_manager_dist_frontend.main()
+from sandbox_manager_dist import sandboxd
+sandboxd.main()

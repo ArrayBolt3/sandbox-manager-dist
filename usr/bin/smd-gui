@@ -6,5 +6,5 @@
 import sys
 sys.dont_write_bytecode = True
 
-from sandbox_manager_dist import sandbox_manager_dist_backend
-sandbox_manager_dist_backend.main()
+from sandbox_manager_dist import smd_gui
+smd_gui.main()
