@@ -3,7 +3,7 @@
 # Copyright (C) 2026 - 2026 ENCRYPTED SUPPORT LLC <adrelanos@whonix.org>
 # See the file COPYING for copying conditions.
 
-# pylint: disable=too-many-lines
+# pylint: disable=too-many-lines, broad-exception-caught
 
 """
 protocol.py - Defines the IPC protocol used for communication between the
@@ -48,8 +48,8 @@ class SmdBaseMsg:
     def __init__(
         self,
         correlation_id: int,
-        arg_list: list[str] | None,
-        binary_blob: bytes | None,
+        arg_list: list[str] | None = None,
+        binary_blob: bytes | None = None,
     ) -> None:
         """
         Base init function.
@@ -2375,6 +2375,7 @@ class SmdSession:
 
     def __init__(
         self,
+        server_socket_fileno: int = -1,
         session_socket: socket.socket | None = None,
         user_name: str | None = None,
         is_control_session: bool = False,
@@ -2383,7 +2384,8 @@ class SmdSession:
         Session init function.
         """
 
-        ## Possible argument combinations:
+        ## Possible socket/user name/control session bool argument
+        ## combinations:
         ## - session_socket set, user_name set, is_control_session = True:
         ##   - Illegal, user_name cannot be set when is_control_session is
         ##     True.
@@ -2405,20 +2407,35 @@ class SmdSession:
         ## - session_socket not set, user_name not set, is_control_session
         ##   = False:
         ##   - Illegal, user_name must be set when is_control_session is False.
+        ##
+        ## server_socket_fileno must be set if session_socket is passed,
+        ## otherwise it must be omitted.
 
+        self.server_socket_fileno: int = server_socket_fileno
         self.user_name: str | None
         self.backend_socket: socket.socket
         self.is_control_session: bool = is_control_session
         self.is_server_side: bool = False
         self.is_session_open: bool = True
 
+        if server_socket_fileno != -1 and session_socket is None:
+            raise ValueError(
+                "server_socket_fileno cannot be passed if session_socket is "
+                + "not passed"
+            )
+        if server_socket_fileno == -1 and session_socket is not None:
+            raise ValueError(
+                "server_socket_fileno must be passed if session_socket is "
+                + "passed"
+            )
+
         if not is_control_session and user_name is None:
             raise ValueError(
-                "user_name must be passed if creating a comm session."
+                "user_name must be passed if creating a comm session"
             )
         if is_control_session and user_name is not None:
             raise ValueError(
-                "user_name must not be passed when creating a control session."
+                "user_name must not be passed when creating a control session"
             )
 
         if session_socket is None:
@@ -2432,7 +2449,7 @@ class SmdSession:
                 user_name = SmdCommon.normalize_user_id(user_name)
                 if user_name is None:
                     raise ValueError(
-                        f"Account '{orig_user_name}' does not exist."
+                        f"Account '{orig_user_name}' does not exist"
                     )
                 socket_path = Path(SmdCommon.comm_dir, user_name)
                 if not os.access(socket_path, os.R_OK | os.W_OK):
@@ -2464,7 +2481,7 @@ class SmdSession:
         self.backend_socket.close()
         self.is_session_open = False
 
-    def __abort_connection(self, msg: str, e: Exception | None) -> None:
+    def __abort_connection(self, msg: str, e: Exception | None = None) -> None:
         """
         Closes the connection and raises a ConnectionAbortedError with the
         specified message.
@@ -2473,8 +2490,7 @@ class SmdSession:
         self.close_session()
         if e is None:
             raise ConnectionAbortedError(msg)
-        else:
-            raise ConnectionAbortedError(msg) from e
+        raise ConnectionAbortedError(msg) from e
 
     # pylint: disable=too-many-branches
     def __recv_msg(self) -> bytes:
@@ -2502,7 +2518,7 @@ class SmdSession:
                     self.__abort_connection("Connection locked up", e)
                 continue
             if tmp_buf == b"":
-                raise self.__abort_connection("Connection unexpectedly closed")
+                self.__abort_connection("Connection unexpectedly closed")
             header_len -= len(tmp_buf)
             recv_buf.extend(tmp_buf)
 
@@ -2545,7 +2561,7 @@ class SmdSession:
         msg_payload: bytes = msg_len_bytes + msg_bytes
         msg_payload_len: int = len(msg_payload)
         msg_payload_sent: int = 0
-        while msg_payload_send < msg_payload_len:
+        while msg_payload_sent < msg_payload_len:
             msg_sent: int = self.backend_socket.send(
                 msg_payload[msg_payload_sent:]
             )
@@ -2660,7 +2676,7 @@ class SmdSession:
                 )
         return msg
 
-    def send_msg(self, msg_obj: SmdBaseMsg) -> None:
+    def send_msg(self, msg: SmdBaseMsg) -> None:
         """
         Sends a message to the remote client or server. Validates that the
         message being sent is appropriate coming from the sender.
@@ -2700,7 +2716,7 @@ class SmdSession:
                     + f"'{str(type(msg))}'"
                 )
 
-        self.__send_msg(msg_obj)
+        self.__send_msg(msg)
 
 
 class SmdServerSocket:
@@ -2719,16 +2735,19 @@ class SmdServerSocket:
 
         self.backend_socket: socket.socket
         self.socket_type: SmdSocketType
+        self.socket_path: Path
+        self.is_socket_connected: bool = True
         self.user_name: str | None = None
 
         if socket_type == SmdSocketType.CONTROL:
             if user_name is not None:
                 raise ValueError(
-                    "user-name is only valid with "
+                    "user_name is only valid with "
                     "SmdSocketType.COMMUNICATION"
                 )
             self.backend_socket = socket.socket(family=socket.AF_UNIX)
-            self.backend_socket.bind(str(SmdCommon.control_path))
+            self.socket_path = SmdCommon.control_path
+            self.backend_socket.bind(str(self.socket_path))
             os.chown(SmdCommon.control_path, 0, 0)
             os.chmod(SmdCommon.control_path, stat.S_IRUSR | stat.S_IWUSR)
             self.backend_socket.listen(10)
@@ -2742,7 +2761,7 @@ class SmdServerSocket:
             orig_user_name: str = user_name
             user_name = SmdCommon.normalize_user_id(user_name)
             if user_name is None:
-                raise ValueError(f"Account '{orig_user_name}' does not exist.")
+                raise ValueError(f"Account '{orig_user_name}' does not exist")
 
             try:
                 user_info: pwd.struct_passwd = pwd.getpwnam(user_name)
@@ -2750,14 +2769,14 @@ class SmdServerSocket:
                 target_gid: int = user_info.pw_gid
             except Exception as e:
                 raise ValueError(
-                    f"Account '{user_name}' does not exist."
+                    f"Account '{user_name}' does not exist"
                 ) from e
 
             self.backend_socket = socket.socket(family=socket.AF_UNIX)
-            socket_path: Path = Path(SmdCommon.comm_dir, user_name)
-            self.backend_socket.bind(str(socket_path))
-            os.chown(socket_path, target_uid, target_gid)
-            os.chmod(socket_path, stat.S_IRUSR | stat.S_IWUSR)
+            self.socket_path = Path(SmdCommon.comm_dir, user_name)
+            self.backend_socket.bind(str(self.socket_path))
+            os.chown(self.socket_path, target_uid, target_gid)
+            os.chmod(self.socket_path, stat.S_IRUSR | stat.S_IWUSR)
             self.backend_socket.listen(10)
             self.user_name = user_name
 
@@ -2774,15 +2793,25 @@ class SmdServerSocket:
         session_socket: socket.socket = self.backend_socket.accept()[0]
         if self.socket_type == SmdSocketType.CONTROL:
             return SmdSession(
-                session_socket=session_socket, is_control_session=True
+                server_socket_fileno=self.fileno(),
+                session_socket=session_socket,
+                is_control_session=True,
             )
 
         assert self.user_name is not None
         return SmdSession(
+            server_socket_fileno=self.fileno(),
             session_socket=session_socket,
             user_name=self.user_name,
             is_control_session=False,
         )
+
+    def fileno(self) -> int:
+        """
+        Gets the file descriptor number of the backend socket.
+        """
+
+        return self.backend_socket.fileno()
 
     def close(self) -> None:
         """
@@ -2790,3 +2819,5 @@ class SmdServerSocket:
         """
 
         self.backend_socket.close()
+        self.socket_path.unlink(missing_ok=True)
+        self.is_socket_connected = False
