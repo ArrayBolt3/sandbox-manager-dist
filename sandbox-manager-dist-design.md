@@ -139,6 +139,8 @@ it normally.
   new window.
 * If the backend is outdated when the frontend is opened, opens the Restart
   Backend screen in a new window.
+* If damaged sandboxes are found when the frontend is opened, opens the Damaged
+  Sandboxes screen in a new window.
 
 ## Sandboxes screen (normal mode)
 
@@ -737,7 +739,7 @@ displayed.
 
 ```
 +------------------------------------------+
-| Browse Files - Sandbox Manager     v ^ X |
+| @ Browse Files - Sandbox Manager   v ^ X |
 +------------------------------------------+
 |                                          |
 | +--------------------------------------+ |
@@ -774,7 +776,7 @@ displayed.
 
 ```
 +-------------------------------------------+
-| App Info - Sandbox Manager          v ^ X |
+| @ App Info - Sandbox Manager        v ^ X |
 +-------------------------------------------+
 |         Name: _Firefox___________________ |
 | Generic Name: _Web Browser_______________ |
@@ -804,7 +806,7 @@ displayed.
 
 ```
 +----------------------------------------------------+
-| Running Jobs - Sandbox Manager               v ^ X |
+| @ Running Jobs - Sandbox Manager             v ^ X |
 +----------------------------------------------------+
 |     Job type: Create Sandbox                       |
 | Sandbox name: Element                              |
@@ -841,7 +843,7 @@ displayed.
 
 ```
 +---------------------------------------------------------------------+
-| Data Transfer Incomplete - Sandbox Manager                    v ^ X |
+| @ Data Transfer Incomplete - Sandbox Manager                  v ^ X |
 +---------------------------------------------------------------------+
 | One or more data transfer jobs are running. Closing Sandbox Manager |
 | will interrupt them. Are you sure you want to do this?              |
@@ -857,7 +859,7 @@ displayed.
 
 ```
 +--------------------------------------------------------------------+
-| Restart Backend - Sandbox Manager                            v ^ X |
+| @ Restart Backend - Sandbox Manager                          v ^ X |
 +--------------------------------------------------------------------+
 | The sandbox manager backend has been updated, and must restart for |
 | updates to apply. Would you like to restart it now?                |
@@ -876,26 +878,106 @@ displayed.
 * The running sandboxes warning is not displayed if there are no running
   sandboxes.
 * The running jobs warning is not displayed if there are no running jobs.
-* Clicking "Restart" freezes the UI, and tells the backend to restart itself.
+* Clicking "Restart" closes the window, freezes the UI, and tells the backend
+  to restart itself.
   * If the backend accepts the request, the frontend disconnects from the
     backend and attempts to reconnect.
-    * If reconnection succeeds, the UI unfreezes and the window closes.
+    * If reconnection succeeds, the UI unfreezes.
     * If reconnection fails, a Connection Lost screen opens in a new window.
   * If the backend refuses the request, the UI unfreezes and a Restart Denied
     screen opens in a new window.
 * Clicking "Skip" closes the window.
 
+## Damaged Sandboxes screen
+
+```
++--------------------------------------------------------------------------------+
+| @ Damaged Sandboxes - Sandbox Manager                                    v ^ X |
++--------------------------------------------------------------------------------+
+| The following sandboxes belonging to this user are damaged and cannot be used: |
+|                                                                                |
+| * Element                                                                      |
+|   * Path: /home/sandbox-manager-dist/1000/abcdef12-3456-7890-1234-abcdef123456 |
+| * <unknown>                                                                    |
+|   * Path: /home/sandbox-manager-dist/1000/abcdef12-3456-7890-1234-abcdef123457 |
+|                                                                                |
+| If you did not change these sandboxes manually, they were most likely left     |
+| behind by an interrupted create or delete process. In these situations, it is  |
+| generally safe to simply delete the corrupted files.                           |
+|                                                                                |
+| Would you like to delete the damaged sandboxes now?                            |
+|                                                                                |
+|                                                                <Delete> <Keep> |
++--------------------------------------------------------------------------------+
+```
+
+* Clicking "Delete" closes this window, freezes the UI, and tells the backend
+  to delete the damaged sandboxes.
+  * If deleting the damaged sandboxes succeeds, the backend sends back info
+    indicating this. Once that happens, the Damaged Sandboxes Deleted screen
+    opens in a new window.
+  * If deleting the damaged sandboxes fails, the backend sends back info
+    indicating this. Once that happens, the Damaged Sandbox Deletion Failed
+    screen opens in a new window.
+* Clicking "Keep" closes this window and opens the Skipping Damaged Sandbox
+  Deletion screen in a new window.
+
+## Damaged Sandboxes Deleted screen
+
+```
++-----------------------------------------------------------------+
+| @ Damaged Sandboxes Deleted - Sandbox Manager             v ^ X |
++-----------------------------------------------------------------+
+| All damaged sandboxes belonging to this user have been deleted. |
+|                                                                 |
+|                                                            <OK> |
++-----------------------------------------------------------------+
+```
+
+## Skipping Damaged Sandbox Deletion screen
+
+```
++------------------------------------------------------------------+
+| @ Skipping Damaged Sandbox Deletion - Sandbox Manager      v ^ X |
++------------------------------------------------------------------+
+| Damaged sandboxes have not been deleted. They will not appear in |
+| the user interface, but they are still present on disk. This     |
+| notice will appear again the next time you open Sandbox Manager. |
+|                                                                  |
+|                                                             <OK> |
++------------------------------------------------------------------+
+```
+
+* Clicking "OK" closes the window.
+
 ## Restart Denied screen
 
 ```
 +---------------------------------------------------------------------+
-| Restart Denied - Sandbox Manager                              v ^ X |
+| @ Restart Denied - Sandbox Manager                            v ^ X |
 +---------------------------------------------------------------------+
 | The sandbox manager backend refused to restart! This may be because |
 | other users on the system are actively running sandboxes.           |
 |                                                                     |
 |                                                                <OK> |
 +---------------------------------------------------------------------+
+```
+
+* Clicking "OK" closes the window.
+
+## Damaged Sandbox Deletion Failed screen
+
+```
++------------------------------------------------------------------+
+| @ Damaged Sandbox Deletion Failed - Sandbox Manager        v ^ X |
++------------------------------------------------------------------+
+| The damaged sandboxes could not be deleted! The backend returned |
+| the following error:                                             |
+|                                                                  |
+| PATH: Input/output error                                         |
+|                                                                  |
+|                                                             <OK> |
++------------------------------------------------------------------+
 ```
 
 * Clicking "OK" closes the window.
@@ -1583,9 +1665,9 @@ interface directly.
   Another image contains the sandbox's persistent data. The configuration file
   defines what permissions and resources the sandbox has access to.
 * Sandboxes are stored under /home/sandbox-manager-dist. Each user has their
-  own subdirectory here (/home/sandbox-manager-dist/user,
-  /home/sandbox-manager-dist/sysmaint for instance). Each subdirectory has
-  zero or more subdirectories, each one containing one sandbox.
+  own subdirectory here named after their UID (/home/sandbox-manager-dist/1000
+  for instance). Each subdirectory has zero or more subdirectories, each one
+  containing one sandbox.
 * Each sandbox directory uses a UUID as the name. This avoids possible issues
   with renaming a directory that's actively in use or that is about to be
   used.
@@ -1818,6 +1900,18 @@ interface directly.
       already exists. Must be correlated to a client-sent `CREATE_FILE_BEGIN`
       or `CREATE_DIR` message. Takes no arguments. Does not include a binary
       blob.
+    * `DAMAGED_SANDBOXES_START` - Informs the frontend that damaged sandboxes
+      belonging to its user account are present. Introduces a new correlation
+      ID. Takes no arguments. Does not include a binary blob.
+    * `DAMAGED_SANDBOX` - Provides information about a damaged sandbox to the
+      frontend. Must be correlated to a a `DAMAGED_SANDBOXES_START` message.
+      Takes two arguments; the path to the damaged sandbox, and the name of
+      the damaged sandbox (or the special string `<unknown>` if the sandbox's
+      name is missing). Does not include a binary blob.
+    * `DAMAGED_SANDBOXES_END` - Informs the frontend that info about all
+      damaged sandboxes belonging to its user account has been sent. Must be
+      correlated to a `DAMAGED_SANDBOXES_START` message. Takes no arguments.
+      Does not include a binary blob.
     * `CREATE_INPROGRESS` - Informs the frontend that the sandbox creation
       request has been accepted and is being processed. Broadcast to
       long-lived clients. Must be correlated to a client-sent `CREATE_END`

@@ -51,7 +51,7 @@ class SandboxdGlobal:
     pid_file_path: Path = Path(SmdCommon.state_dir, "pid")
     old_umask: int = 0
 
-    sandbox_config_list: list[SandboxConfig] = []
+    sandbox_config_list: list[SandboxState] = []
     socket_list: list[SmdServerSocket] = []
     comm_thread_list: list[SandboxdCommThread] = []
     session_list_lock: Lock = Lock()
@@ -126,7 +126,7 @@ class SandboxdGlobal:
 
 
 @dataclass
-class SharedFsoConfig:
+class SharedFsoState:
     """
     Configuration info for a shared folder or file.
     """
@@ -138,7 +138,7 @@ class SharedFsoConfig:
 
 # pylint: disable=too-many-instance-attributes
 @dataclass
-class SandboxConfig:
+class SandboxState:
     """
     Configuration info for a sandbox.
     """
@@ -159,7 +159,7 @@ class SandboxConfig:
     three_d_enabled: bool  ## can't have number at start of var name
     network_enabled: bool
     nested_sandboxing_enabled: bool
-    shared_fso_list: list[SharedFsoConfig]
+    shared_fso_list: list[SharedFsoState]
     shared_device_list: list[str]
 
 
@@ -756,6 +756,11 @@ def validate_sandbox_repo() -> None:
     Validates that all sandboxes directories have expected contents.
     """
 
+    ## FIXME: This is a little too strict; if sandboxd or the system it runs
+    ## on crashes in the middle of creating or deleting a sandbox, it may
+    ## leave the sandbox repo dir in an inconsistent state, which will result
+    ## in sandbox-manager-dist becoming bricked if we validate this strictly.
+
     for sandbox_user_path in SmdCommon.sandbox_dir.iterdir():
         try:
             SmdCommon.validate_id(
@@ -860,13 +865,13 @@ def load_sandbox_config() -> None:
                 isinstance(x, str) for x in config_dict["shared_device_list"]
             )
 
-            shared_fso_list: list[SharedFsoConfig] = []
+            shared_fso_list: list[SharedFsoState] = []
             for shared_fso_blob in config_dict["shared_fso_list"]:
                 assert isinstance(shared_fso_blob["read_write"], bool)
                 assert isinstance(shared_fso_blob["host_path"], str)
                 assert isinstance(shared_fso_blob["sandbox_path"], str)
                 shared_fso_list.append(
-                    SharedFsoConfig(
+                    SharedFsoState(
                         shared_fso_blob["read_write"],
                         shared_fso_blob["host_path"],
                         shared_fso_blob["sandbox_path"],
@@ -874,7 +879,7 @@ def load_sandbox_config() -> None:
                 )
 
             SandboxdGlobal.sandbox_config_list.append(
-                SandboxConfig(
+                SandboxState(
                     uuid=sandbox_path.name,
                     user_uid=int(sandbox_user_path.name),
                     name=config_dict["name"],

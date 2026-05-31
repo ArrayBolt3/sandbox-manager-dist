@@ -49,10 +49,6 @@ class SmdBaseMsg:
         arg_list: list[str] | None = None,
         binary_blob: bytes | None = None,
     ) -> None:
-        """
-        Base init function.
-        """
-
         self.correlation_id: int = correlation_id
         self.arg_list: list[str] = arg_list if arg_list is not None else []
         self.binary_blob: bytes = (
@@ -68,10 +64,6 @@ class SmdBaseMsg:
         trailing_binary: bool | None = None,
         register: bool = True,
     ) -> None:
-        """
-        Class derivation function.
-        """
-
         if name is not None:
             cls.name = name
         if arg_count is not None:
@@ -224,10 +216,6 @@ class SmdControlClientRegisterMsg(
         arg_list: list[str] | None = None,
         binary_blob: bytes | None = None,
     ) -> None:
-        """
-        REGISTER init function.
-        """
-
         super().__init__(correlation_id, arg_list, binary_blob)
         assert arg_list is not None
         SmdCommon.validate_id(
@@ -253,10 +241,6 @@ class SmdControlClientUnregisterMsg(
         arg_list: list[str] | None = None,
         binary_blob: bytes | None = None,
     ) -> None:
-        """
-        UNREGISTER init function.
-        """
-
         super().__init__(correlation_id, arg_list, binary_blob)
         assert arg_list is not None
         SmdCommon.validate_id(
@@ -416,10 +400,6 @@ class SmdCommClientConfigStartMsg(
         arg_list: list[str] | None = None,
         binary_blob: bytes | None = None,
     ) -> None:
-        """
-        CONFIG_START init function.
-        """
-
         super().__init__(correlation_id, arg_list, binary_blob)
         assert arg_list is not None
         SmdCommon.validate_id(
@@ -458,10 +438,6 @@ class SmdCommClientGetConfigMsg(
         arg_list: list[str] | None = None,
         binary_blob: bytes | None = None,
     ) -> None:
-        """
-        GET_CONFIG init function.
-        """
-
         super().__init__(correlation_id, arg_list, binary_blob)
         assert arg_list is not None
         SmdCommon.validate_id(
@@ -487,10 +463,6 @@ class SmdCommClientDeleteMsg(
         arg_list: list[str] | None = None,
         binary_blob: bytes | None = None,
     ) -> None:
-        """
-        DELETE init function.
-        """
-
         super().__init__(correlation_id, arg_list, binary_blob)
         assert arg_list is not None
         SmdCommon.validate_id(
@@ -516,10 +488,6 @@ class SmdCommClientCloneMsg(
         arg_list: list[str] | None = None,
         binary_blob: bytes | None = None,
     ) -> None:
-        """
-        CLONE init function.
-        """
-
         super().__init__(correlation_id, arg_list, binary_blob)
         assert arg_list is not None
         SmdCommon.validate_id(
@@ -550,10 +518,6 @@ class SmdCommClientBootMsg(
         arg_list: list[str] | None = None,
         binary_blob: bytes | None = None,
     ) -> None:
-        """
-        BOOT init function.
-        """
-
         super().__init__(correlation_id, arg_list, binary_blob)
         assert arg_list is not None
         SmdCommon.validate_id(
@@ -584,10 +548,6 @@ class SmdCommClientShutdownMsg(
         arg_list: list[str] | None = None,
         binary_blob: bytes | None = None,
     ) -> None:
-        """
-        SHUTDOWN init function.
-        """
-
         super().__init__(correlation_id, arg_list, binary_blob)
         assert arg_list is not None
         SmdCommon.validate_id(
@@ -618,10 +578,6 @@ class SmdCommClientCreateFileBeginMsg(
         arg_list: list[str] | None = None,
         binary_blob: bytes | None = None,
     ) -> None:
-        """
-        CREATE_FILE_BEGIN init function.
-        """
-
         super().__init__(correlation_id, arg_list, binary_blob)
         assert arg_list is not None
         SmdCommon.validate_id(
@@ -689,10 +645,6 @@ class SmdCommClientCreateDirMsg(
         arg_list: list[str] | None = None,
         binary_blob: bytes | None = None,
     ) -> None:
-        """
-        CREATE_DIR init function.
-        """
-
         super().__init__(correlation_id, arg_list, binary_blob)
         assert arg_list is not None
         SmdCommon.validate_id(
@@ -738,10 +690,6 @@ class SmdCommClientListDirMsg(
         arg_list: list[str] | None = None,
         binary_blob: bytes | None = None,
     ) -> None:
-        """
-        LIST_DIR init function.
-        """
-
         super().__init__(correlation_id, arg_list, binary_blob)
         assert arg_list is not None
         SmdCommon.validate_id(
@@ -772,10 +720,6 @@ class SmdCommClientReadFileMsg(
         arg_list: list[str] | None = None,
         binary_blob: bytes | None = None,
     ) -> None:
-        """
-        READ_FILE init function.
-        """
-
         super().__init__(correlation_id, arg_list, binary_blob)
         assert arg_list is not None
         SmdCommon.validate_id(
@@ -817,10 +761,6 @@ class SmdCommClientListAppsMsg(
         arg_list: list[str] | None = None,
         binary_blob: bytes | None = None,
     ) -> None:
-        """
-        LIST_APPS init function.
-        """
-
         super().__init__(correlation_id, arg_list, binary_blob)
         assert arg_list is not None
         SmdCommon.validate_id(
@@ -846,10 +786,6 @@ class SmdCommClientGetAppInfoMsg(
         arg_list: list[str] | None = None,
         binary_blob: bytes | None = None,
     ) -> None:
-        """
-        GET_APP_INFO init function.
-        """
-
         super().__init__(correlation_id, arg_list, binary_blob)
         assert arg_list is not None
         SmdCommon.validate_id(
@@ -880,10 +816,6 @@ class SmdCommClientExecMsg(
         arg_list: list[str] | None = None,
         binary_blob: bytes | None = None,
     ) -> None:
-        """
-        EXEC init function.
-        """
-
         super().__init__(correlation_id, arg_list, binary_blob)
         assert arg_list is not None
         SmdCommon.validate_id(
@@ -914,10 +846,6 @@ class SmdCommClientShellMsg(
         arg_list: list[str] | None = None,
         binary_blob: bytes | None = None,
     ) -> None:
-        """
-        SHELL init function.
-        """
-
         super().__init__(correlation_id, arg_list, binary_blob)
         assert arg_list is not None
         SmdCommon.validate_id(
@@ -1093,6 +1021,61 @@ class SmdCommServerFsoExistsMsg(
     """
 
 
+class SmdCommServerDamagedSandboxesStartMsg(
+    SmdCommServerMsg,
+    name="DAMAGED_SANDBOXES_START",
+    arg_count=0,
+    trailing_binary=False,
+    do_broadcast=False,
+):
+    """
+    Informs the client that info about damaged sandboxes is about to be sent.
+    """
+
+
+class SmdCommServerDamagedSandboxMsg(
+    SmdCommServerMsg,
+    name="DAMAGED_SANDBOX",
+    arg_count=2,
+    trailing_binary=False,
+    do_broadcast=False,
+):
+    """
+    Provides the client info about a damaged sandbox.
+    """
+
+    def __init__(
+        self,
+        correlation_id: int,
+        arg_list: list[str] | None = None,
+        binary_blob: bytes | None = None,
+    ) -> None:
+        super().__init__(correlation_id, arg_list, binary_blob)
+        assert arg_list is not None
+        SmdCommon.validate_id(
+            arg_list[0],
+            [SmdValidateType.UUID],
+            "Sandbox UUID failed validation",
+        )
+        ## The second argument (the sandbox name) is intentionally not
+        ## validated, as it may be the special string '<unknown>', which is not
+        ## a valid sandbox name. The code that constructs this object is
+        ## expected to ensure malicious sandbox names don't make it into this
+        ## message.
+
+
+class SmdCommServerDamagedSandboxesEndMsg(
+    SmdCommServerMsg,
+    name="DAMAGED_SANDBOXES_END",
+    arg_count=0,
+    trailing_binary=False,
+    do_broadcast=False,
+):
+    """
+    Informs the client that info about damaged sandboxes has been sent.
+    """
+
+
 class SmdCommServerCreateInprogressMsg(
     SmdCommServerMsg,
     name="CREATE_INPROGRESS",
@@ -1110,10 +1093,6 @@ class SmdCommServerCreateInprogressMsg(
         arg_list: list[str] | None = None,
         binary_blob: bytes | None = None,
     ) -> None:
-        """
-        CREATE_INPROGRESS init function.
-        """
-
         super().__init__(correlation_id, arg_list, binary_blob)
         assert arg_list is not None
         SmdCommon.validate_id(
@@ -1164,10 +1143,6 @@ class SmdCommServerConfigInprogressMsg(
         arg_list: list[str] | None = None,
         binary_blob: bytes | None = None,
     ) -> None:
-        """
-        CONFIG_INPROGRESS init function.
-        """
-
         super().__init__(correlation_id, arg_list, binary_blob)
         assert arg_list is not None
         SmdCommon.validate_id(
@@ -1244,10 +1219,6 @@ class SmdCommServerDeleteInprogressMsg(
         arg_list: list[str] | None = None,
         binary_blob: bytes | None = None,
     ) -> None:
-        """
-        DELETE_INPROGRESS init function.
-        """
-
         super().__init__(correlation_id, arg_list, binary_blob)
         assert arg_list is not None
         SmdCommon.validate_id(
@@ -1298,10 +1269,6 @@ class SmdCommServerCloneInprogressMsg(
         arg_list: list[str] | None = None,
         binary_blob: bytes | None = None,
     ) -> None:
-        """
-        CLONE_INPROGRESS init function.
-        """
-
         super().__init__(correlation_id, arg_list, binary_blob)
         assert arg_list is not None
         SmdCommon.validate_id(
@@ -1362,10 +1329,6 @@ class SmdCommServerBootInprogressMsg(
         arg_list: list[str] | None = None,
         binary_blob: bytes | None = None,
     ) -> None:
-        """
-        BOOT_INPROGRESS init function.
-        """
-
         super().__init__(correlation_id, arg_list, binary_blob)
         assert arg_list is not None
         SmdCommon.validate_id(
@@ -1421,10 +1384,6 @@ class SmdCommServerShutdownInprogressMsg(
         arg_list: list[str] | None = None,
         binary_blob: bytes | None = None,
     ) -> None:
-        """
-        SHUTDOWN_INPROGRESS init function.
-        """
-
         super().__init__(correlation_id, arg_list, binary_blob)
         assert arg_list is not None
         SmdCommon.validate_id(
@@ -1555,10 +1514,6 @@ class SmdCommServerListDirEntry(
         arg_list: list[str] | None = None,
         binary_blob: bytes | None = None,
     ) -> None:
-        """
-        LIST_DIR_ENTRY init function.
-        """
-
         super().__init__(correlation_id, arg_list, binary_blob)
         assert arg_list is not None
         SmdCommon.validate_id(
@@ -1631,10 +1586,6 @@ class SmdCommServerReadFileStartMsg(
         arg_list: list[str] | None = None,
         binary_blob: bytes | None = None,
     ) -> None:
-        """
-        READ_FILE_START init function.
-        """
-
         super().__init__(correlation_id, arg_list, binary_blob)
         assert arg_list is not None
         SmdCommon.validate_id(
@@ -1732,10 +1683,6 @@ class SmdCommServerListAppsEntryMsg(
         arg_list: list[str] | None = None,
         binary_blob: bytes | None = None,
     ) -> None:
-        """
-        LIST_APPS_ENTRY init function.
-        """
-
         super().__init__(correlation_id, arg_list, binary_blob)
         assert arg_list is not None
         ## There is intentionally no validation on the first two arguments
@@ -1991,10 +1938,6 @@ class SmdCommBidiNameMsg(
         arg_list: list[str] | None = None,
         binary_blob: bytes | None = None,
     ) -> None:
-        """
-        NAME init function.
-        """
-
         super().__init__(correlation_id, arg_list, binary_blob)
         assert arg_list is not None
         SmdCommon.validate_id(
@@ -2033,10 +1976,6 @@ class SmdCommBidiRootVolSizeMsg(
         arg_list: list[str] | None = None,
         binary_blob: bytes | None = None,
     ) -> None:
-        """
-        ROOT_VOL_SIZE init function.
-        """
-
         super().__init__(correlation_id, arg_list, binary_blob)
         assert arg_list is not None
         SmdCommon.validate_id(
@@ -2065,10 +2004,6 @@ class SmdCommBidiDataVolSizeMsg(
         arg_list: list[str] | None = None,
         binary_blob: bytes | None = None,
     ) -> None:
-        """
-        DATA_VOL_SIZE init function.
-        """
-
         super().__init__(correlation_id, arg_list, binary_blob)
         assert arg_list is not None
         SmdCommon.validate_id(
@@ -2097,10 +2032,6 @@ class SmdCommBidiMemoryMsg(
         arg_list: list[str] | None = None,
         binary_blob: bytes | None = None,
     ) -> None:
-        """
-        MEMORY init function.
-        """
-
         super().__init__(correlation_id, arg_list, binary_blob)
         assert arg_list is not None
         SmdCommon.validate_id(
@@ -2129,10 +2060,6 @@ class SmdCommBidiCpuWeightMsg(
         arg_list: list[str] | None = None,
         binary_blob: bytes | None = None,
     ) -> None:
-        """
-        CPU_WEIGHT init function.
-        """
-
         super().__init__(correlation_id, arg_list, binary_blob)
         assert arg_list is not None
         SmdCommon.validate_id(
@@ -2164,10 +2091,6 @@ class SmdCommBidiCpuWeightMsg(
 #        arg_list: list[str] | None = None,
 #        binary_blob: bytes | None = None,
 #    ) -> None:
-#        """
-#        CPU_CORES init function.
-#        """
-#
 #        super().__init__(correlation_id, arg_list, binary_blob)
 #        assert arg_list is not None
 #        SmdCommon.validate_id(
@@ -2196,10 +2119,6 @@ class SmdCommBidiIoWeightMsg(
         arg_list: list[str] | None = None,
         binary_blob: bytes | None = None,
     ) -> None:
-        """
-        IO_WEIGHT init function.
-        """
-
         super().__init__(correlation_id, arg_list, binary_blob)
         assert arg_list is not None
         SmdCommon.validate_id(
@@ -2228,10 +2147,6 @@ class SmdCommBidiAudioEnabledMsg(
         arg_list: list[str] | None = None,
         binary_blob: bytes | None = None,
     ) -> None:
-        """
-        AUDIO_ENABLED init function.
-        """
-
         super().__init__(correlation_id, arg_list, binary_blob)
         assert arg_list is not None
         SmdCommon.validate_id(
@@ -2257,10 +2172,6 @@ class SmdCommBidiWaylandEnabledMsg(
         arg_list: list[str] | None = None,
         binary_blob: bytes | None = None,
     ) -> None:
-        """
-        WAYLAND_ENABLED init function.
-        """
-
         super().__init__(correlation_id, arg_list, binary_blob)
         assert arg_list is not None
         SmdCommon.validate_id(
@@ -2286,10 +2197,6 @@ class SmdCommBidiX11EnabledMsg(
         arg_list: list[str] | None = None,
         binary_blob: bytes | None = None,
     ) -> None:
-        """
-        X11_ENABLED init function.
-        """
-
         super().__init__(correlation_id, arg_list, binary_blob)
         assert arg_list is not None
         SmdCommon.validate_id(
@@ -2315,10 +2222,6 @@ class SmdCommBidi3dEnabledMsg(
         arg_list: list[str] | None = None,
         binary_blob: bytes | None = None,
     ) -> None:
-        """
-        3D_ENABLED init function.
-        """
-
         super().__init__(correlation_id, arg_list, binary_blob)
         assert arg_list is not None
         SmdCommon.validate_id(
@@ -2344,10 +2247,6 @@ class SmdCommBidiNetworkEnabledMsg(
         arg_list: list[str] | None = None,
         binary_blob: bytes | None = None,
     ) -> None:
-        """
-        NETWORK_ENABLED init function.
-        """
-
         super().__init__(correlation_id, arg_list, binary_blob)
         assert arg_list is not None
         SmdCommon.validate_id(
@@ -2374,10 +2273,6 @@ class SmdCommBidiNestedSandboxingEnabledMsg(
         arg_list: list[str] | None = None,
         binary_blob: bytes | None = None,
     ) -> None:
-        """
-        NESTED_SANDBOXING_ENABLED init function.
-        """
-
         super().__init__(correlation_id, arg_list, binary_blob)
         assert arg_list is not None
         SmdCommon.validate_id(
@@ -2403,10 +2298,6 @@ class SmdCommBidiSharedFsoMsg(
         arg_list: list[str] | None = None,
         binary_blob: bytes | None = None,
     ) -> None:
-        """
-        SHARED_FSO init function.
-        """
-
         super().__init__(correlation_id, arg_list, binary_blob)
         assert arg_list is not None
         SmdCommon.validate_id(
@@ -2442,10 +2333,6 @@ class SmdCommBidiSharedDeviceMsg(
         arg_list: list[str] | None = None,
         binary_blob: bytes | None = None,
     ) -> None:
-        """
-        SHARED_DEVICE init function.
-        """
-
         super().__init__(correlation_id, arg_list, binary_blob)
         assert arg_list is not None
         SmdCommon.validate_id(
@@ -2467,10 +2354,6 @@ class SmdSession:
         user_name: str | None = None,
         is_control_session: bool = False,
     ) -> None:
-        """
-        Session init function.
-        """
-
         ## Possible socket/user name/control session bool argument
         ## combinations:
         ## - session_socket set, user_name set, is_control_session = True:
@@ -2814,10 +2697,6 @@ class SmdServerSocket:
     def __init__(
         self, socket_type: SmdSocketType, user_name: str | None = None
     ) -> None:
-        """
-        Server socket init function.
-        """
-
         self.backend_socket: socket.socket
         self.socket_type: SmdSocketType
         self.socket_path: Path
