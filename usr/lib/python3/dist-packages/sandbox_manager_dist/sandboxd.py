@@ -19,11 +19,10 @@ import logging
 import shutil
 import select
 import queue
+import multiprocessing as mp
 from pathlib import Path
 from queue import SimpleQueue
 from threading import Thread, Lock
-from multiprocessing import Process, Pipe
-from multiprocessing.connection import Connection
 from typing import IO, NoReturn, Callable, Any
 
 import sdnotify  # type: ignore
@@ -35,6 +34,7 @@ import sdnotify  # type: ignore
 from .common import *
 from .protocol import *
 
+from .nspawn_manager import nspawn_manager_main
 
 # pylint: disable=too-few-public-methods
 class SandboxdGlobal:
@@ -48,9 +48,11 @@ class SandboxdGlobal:
     socket_list: list[SmdServerSocket] = []
     comm_session_thread_list: list[SandboxdCommSessionThread] = []
     session_list_lock: Lock = Lock()
+    nspawn_manager_list: list[NspawnManager] = []
 
     sdnotify_object: sdnotify.SystemdNotifier = sdnotify.SystemdNotifier()
 
+    ## ctm = control to main
     ctm_read_fd: int = 0
     ctm_write_fd: int = 0
     ctm_read_pipe: IO[bytes] | None = None
@@ -62,20 +64,52 @@ class SandboxdGlobal:
 
 class HandlerProc:
     """
-    A child process spawned using multiprocessing.
+    A child process used to offload some of sandboxd's tasks.
     """
 
     def __init__(
-        self, correlation_id: int, target_func: Callable[[Connection], None]
+        self, correlation_id: int, target_func: Callable[[mp.Connection], None]
     ) -> None:
         self.correlation_id = correlation_id
         ## ptc = parent to child
-        self.ptc_pipe: Connection
+        self.ptc_pipe: mp.Connection
         ## ctp = child to parent
-        self.ctp_pipe: Connection
-        self.ptc_pipe, self.ctp_pipe = Pipe(duplex=True)
-        self.child_proc: Process = Process(
+        self.ctp_pipe: mp.Connection
+        self.ptc_pipe, self.ctp_pipe = mp.Pipe(duplex=True)
+        self.child_proc: Process = mp.Process(
             target=target_func, args=(self.ctp_pipe,)
+        )
+        self.child_proc.start()
+
+
+class NspawnManager:
+    """
+    A child process used to boot sandboxes and interface with them after
+    bootup.
+    """
+
+    def __init__(
+        self, sandbox_uuid: str, boot_mode: str
+    ) -> None:
+        SmdCommon.validate_id(
+            sandbox_uuid, [SmdValidateType.UUID], "UUID failed validation"
+        )
+        SmdCommon.validate_id(
+            boot_mode,
+            [SmdValidateType.BOOT_MODE],
+            "Boot mode failed validation",
+        )
+        self.sandbox_uuid: str = sandbox_uuid
+        self.boot_mode = boot_mode
+        ## ptc = parent to child
+        self.ptc_pipe: mp.Connection
+        ## ctp = child to parent
+        self.ctp_pipe: mp.Connection
+        self.ptc_pipe, self.ctp_pipe = mp.Pipe(duplex=True)
+        self.child_proc: Process = mp.Process(
+            target=nspawn_manager_main, args=(
+                self.ctp_pipe, sandbox_uuid, boot_mode
+            )
         )
         self.child_proc.start()
 
@@ -129,21 +163,31 @@ class SandboxdCommSessionThread:
     ##   SandboxdGlobal.session_list_lock to avoid racing the main thread.
     ## * For specific "trivial" situations, we handle them synchronously in
     ##   this thread. Examples include handling very trivial messages (i.e.
-    ##   QUERY_NEED_RESTART), permissions handling, and letting the child know
+    ##   QUERY_NEED_RESTART), permissions handling, and letting clients know
     ##   that a long-running process has started.
-    ## * All other messages trigger a new process to be spawned via
+    ## * Most other messages trigger a new handler process to be spawned via
     ##   multiprocessing. This process communicates to the parent using a pipe
-    ##   so that epoll can be used to wake up the thread when the child has
+    ##   so that epoll can be used to wake up the thread when the handler has
     ##   something to say.
-    ## * Child processes never communicate with clients directly, they always
-    ##   go through this thread to do that. All messages sent back by child
-    ##   processes are messages that are intended to be forwarded to clients.
-    ##   The only messages expected to be sent to child processes are messages
-    ##   received from the client.
-    ## * Each child process has a message correlation ID associated with it.
-    ##   Incoming messages that have a correlation ID matching a running child
-    ##   process are blindly forwarded to that child process; it is the
-    ##   child's responsibility to handle invalid messages correctly.
+    ## * Handler processes never communicate with clients directly, they
+    ##   always go through this thread to do that. All messages sent back by
+    ##   handlers are messages that are intended to be forwarded to clients.
+    ##   The only messages expected to be sent to handler processes are
+    ##   messages received from the client.
+    ## * Each handler has a message correlation ID associated with it.
+    ##   Incoming messages that have a correlation ID matching a running
+    ##   handler are blindly forwarded to that handler; it is the handler's
+    ##   responsibility to handle invalid messages correctly.
+    ## * Handlers ALWAYS run with the same privileges as sandboxd itself. We
+    ##   do NOT spawn handlers inside the sandbox, because multiprocessing
+    ##   pipes use Python's pickle serialization format internally, which
+    ##   presents a security risk.
+    ## * The only messages that are not handled by typical handler processes
+    ##   or by sandboxd directly are the "boot" commands. These are handled by
+    ##   NspawnManager processes instead, since they are not specific to any
+    ##   one client and need to persist after clients disconnect. The objects
+    ##   send between an NspawnManager and sandboxd are NOT intended to be
+    ##   blindly forwarded, the protocol here is custom.
 
     def __init__(self, comm_session: SmdSession) -> None:
         self.terminate_read_fd: int
@@ -228,7 +272,12 @@ class SandboxdCommSessionThread:
                         "sandboxd lost track of a handler process!"
                     )
                     sys.exit(1)
-                recv_obj: Any = source_handler.ctp_pipe.recv()
+                try:
+                    recv_obj: Any = source_handler.ctp_pipe.recv()
+                except EOFError:
+                    ## Handler terminated, clean it up
+                    self.handler_list.remove(source_handler)
+                    continue
                 assert isinstance(recv_obj, (SmdCommServerMsg, SmdCommBidiMsg))
                 msg_from_child: SmdCommServerMsg | SmdCommBidiMsg = recv_obj
                 try:
@@ -239,6 +288,12 @@ class SandboxdCommSessionThread:
                     )
                     break
                 self.broadcast_message_maybe(msg_from_child)
+
+        ## Close the I/O pipes for all handlers so that they can cleanly
+        ## terminate, rather than killing them manually.
+        for single_handler in self.handler_list:
+            single_handler.ptc_pipe.close()
+        self.handler_list.clear()
 
     def handle_incoming_message(self) -> None:
         """
@@ -757,6 +812,14 @@ def main() -> NoReturn:
     ## window during socket creation, this denies all privileges for
     ## non-owners.
     SandboxdGlobal.old_umask = os.umask(0o077)
+
+    ## Use the 'spawn' method for starting new processes with multiprocessing,
+    ## since 'fork' can cause problems, especially with multithreaded code like
+    ## this.
+    ##
+    ## TODO: Consider using 'forkserver' here instead, if it works and is safe
+    ## it may be faster.
+    mp.set_start_method("spawn")
 
     logging.basicConfig(
         format="%(funcName)s: %(levelname)s: %(message)s", level=logging.INFO
