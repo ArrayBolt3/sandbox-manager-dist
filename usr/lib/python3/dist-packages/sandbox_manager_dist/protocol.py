@@ -170,10 +170,34 @@ class SmdCommClientMsg(SmdBaseMsg, register=False):
 
 class SmdCommServerMsg(SmdBaseMsg, register=False):
     """
-    No-op class that groups together server-to-client comm messages.
+    Mostly-no-op class that groups together server-to-client comm messages.
+    The only meaningful thing this does is add a flag for determining if a
+    message is meant to be broadcast to multiple clients or not.
     """
 
+    do_broadcast: ClassVar[bool]
 
+    # pylint: disable=too-many-arguments
+    def __init_subclass__(
+        cls,
+        *,
+        name: str | None = None,
+        arg_count: int | None = None,
+        trailing_binary: bool | None = None,
+        register: bool = True,
+        do_broadcast: bool = False,
+    ):
+        super().__init_subclass__(
+            name=name,
+            arg_count=arg_count,
+            trailing_binary=trailing_binary,
+            register=register,
+        )
+        cls.do_broadcast = do_broadcast
+
+
+## This class does not include a broadcast flag, because it is always
+## broadcast when sent from server to client.
 class SmdCommBidiMsg(SmdBaseMsg, register=False):
     """
     No-op class that groups together messages that may be sent from server to
@@ -905,8 +929,8 @@ class SmdCommClientShellMsg(
         )
 
 
-class SmdCommServerShellDisconnectMsg(
-    SmdCommServerMsg,
+class SmdCommClientShellDisconnectMsg(
+    SmdCommClientMsg,
     name="SHELL_DISCONNECT",
     arg_count=0,
     trailing_binary=False,
@@ -938,6 +962,7 @@ class SmdCommServerConfirmNeedRestartMsg(
     name="CONFIRM_NEED_RESTART",
     arg_count=0,
     trailing_binary=False,
+    do_broadcast=False,
 ):
     """
     Informs the client that the server needs restarted to apply software
@@ -950,6 +975,7 @@ class SmdCommServerDenyNeedRestartMsg(
     name="DENY_NEED_RESTART",
     arg_count=0,
     trailing_binary=False,
+    do_broadcast=False,
 ):
     """
     Informs the client that the server does not need restarted.
@@ -961,6 +987,7 @@ class SmdCommServerRestartInprogressMsg(
     name="RESTART_INPROGRESS",
     arg_count=0,
     trailing_binary=False,
+    do_broadcast=True,
 ):
     """
     Informs the client that the server is restarting.
@@ -972,6 +999,7 @@ class SmdCommServerRestartDeniedMsg(
     name="RESTART_DENIED",
     arg_count=0,
     trailing_binary=False,
+    do_broadcast=False,
 ):
     """
     Informs the client that the restart request was denied.
@@ -983,6 +1011,7 @@ class SmdCommServerDupNameMsg(
     name="DUP_NAME",
     arg_count=0,
     trailing_binary=False,
+    do_broadcast=False,
 ):
     """
     Informs the client that a requested new sandbox name is already in use.
@@ -994,6 +1023,7 @@ class SmdCommServerSandboxRunningMsg(
     name="SANDBOX_RUNNING",
     arg_count=0,
     trailing_binary=False,
+    do_broadcast=False,
 ):
     """
     Informs the client that a requested operation could not be performed
@@ -1006,6 +1036,7 @@ class SmdCommServerSandboxNotRunningMsg(
     name="SANDBOX_NOT_RUNNING",
     arg_count=0,
     trailing_binary=False,
+    do_broadcast=False,
 ):
     """
     Informs the client that a requested operation could not be performed
@@ -1018,6 +1049,7 @@ class SmdCommServerSandboxMissingMsg(
     name="SANDBOX_MISSING",
     arg_count=0,
     trailing_binary=False,
+    do_broadcast=False,
 ):
     """
     Informs the client that a referenced sandbox cannot be found.
@@ -1029,6 +1061,7 @@ class SmdCommServerConfigInvalidMsg(
     name="CONFIG_INVALID",
     arg_count=0,
     trailing_binary=False,
+    do_broadcast=False,
 ):
     """
     Informs the client that the configuration it attempted to apply to a
@@ -1041,6 +1074,7 @@ class SmdCommServerFsoMissingMsg(
     name="FSO_MISSING",
     arg_count=0,
     trailing_binary=False,
+    do_broadcast=False,
 ):
     """
     Informs the client that a referenced filesystem object in a sandbox does
@@ -1053,6 +1087,7 @@ class SmdCommServerFsoExistsMsg(
     name="FSO_EXISTS",
     arg_count=0,
     trailing_binary=False,
+    do_broadcast=False,
 ):
     """
     Informs the client that a referenced filesystem object in a sandbox
@@ -1065,6 +1100,7 @@ class SmdCommServerCreateInprogressMsg(
     name="CREATE_INPROGRESS",
     arg_count=1,
     trailing_binary=False,
+    do_broadcast=True,
 ):
     """
     Informs the client that a sandbox is being created.
@@ -1094,6 +1130,7 @@ class SmdCommServerCreateSuccessMsg(
     name="CREATE_SUCCESS",
     arg_count=0,
     trailing_binary=False,
+    do_broadcast=True,
 ):
     """
     Informs the client that a sandbox has been created.
@@ -1105,6 +1142,7 @@ class SmdCommServerCreateFailedMsg(
     name="CREATE_FAILED",
     arg_count=0,
     trailing_binary=False,
+    do_broadcast=True,
 ):
     """
     Informs the client that creation of a sandbox failed.
@@ -1116,6 +1154,7 @@ class SmdCommServerConfigInprogressMsg(
     name="CONFIG_INPROGRESS",
     arg_count=1,
     trailing_binary=False,
+    do_broadcast=True,
 ):
     """
     Informs the client that a sandbox is being configured.
@@ -1145,6 +1184,7 @@ class SmdCommServerConfigSuccessMsg(
     name="CONFIG_SUCCESS",
     arg_count=0,
     trailing_binary=False,
+    do_broadcast=True,
 ):
     """
     Informs the client that a sandbox has been configured.
@@ -1156,6 +1196,7 @@ class SmdCommServerConfigFailedMsg(
     name="CONFIG_FAILED",
     arg_count=0,
     trailing_binary=False,
+    do_broadcast=True,
 ):
     """
     Informs the client that configuration of a sandbox failed.
@@ -1167,6 +1208,7 @@ class SmdCommServerConfigInfoStartMsg(
     name="CONFIG_INFO_START",
     arg_count=0,
     trailing_binary=False,
+    do_broadcast=True,
 ):
     """
     Informs the client that messages defining a sandbox's configuration are
@@ -1179,6 +1221,7 @@ class SmdCommServerConfigInfoEndMsg(
     name="CONFIG_INFO_END",
     arg_count=0,
     trailing_binary=False,
+    do_broadcast=True,
 ):
     """
     Informs the client that the server is done sending messages defining a
@@ -1191,6 +1234,7 @@ class SmdCommServerDeleteInprogressMsg(
     name="DELETE_INPROGRESS",
     arg_count=1,
     trailing_binary=False,
+    do_broadcast=True,
 ):
     """
     Informs the client that a sandbox is being deleted.
@@ -1220,6 +1264,7 @@ class SmdCommServerDeleteSuccessMsg(
     name="DELETE_SUCCESS",
     arg_count=0,
     trailing_binary=False,
+    do_broadcast=True,
 ):
     """
     Informs the client that a sandbox has been deleted.
@@ -1231,6 +1276,7 @@ class SmdCommServerDeleteFailedMsg(
     name="DELETE_FAILED",
     arg_count=0,
     trailing_binary=False,
+    do_broadcast=True,
 ):
     """
     Informs the client that deletion of a sandbox failed.
@@ -1242,6 +1288,7 @@ class SmdCommServerCloneInprogressMsg(
     name="CLONE_INPROGRESS",
     arg_count=3,
     trailing_binary=False,
+    do_broadcast=True,
 ):
     """
     Informs the client that a sandbox is being cloned.
@@ -1281,6 +1328,7 @@ class SmdCommServerCloneSuccessMsg(
     name="CLONE_SUCCESS",
     arg_count=0,
     trailing_binary=False,
+    do_broadcast=True,
 ):
     """
     Informs the client that a sandbox has been cloned.
@@ -1292,6 +1340,7 @@ class SmdCommServerCloneFailedMsg(
     name="CLONE_FAILED",
     arg_count=0,
     trailing_binary=False,
+    do_broadcast=True,
 ):
     """
     Informs the client that cloning a sandbox failed.
@@ -1303,6 +1352,7 @@ class SmdCommServerBootInprogressMsg(
     name="BOOT_INPROGRESS",
     arg_count=2,
     trailing_binary=False,
+    do_broadcast=True,
 ):
     """
     Informs the client that a sandbox is booting.
@@ -1337,6 +1387,7 @@ class SmdCommServerBootSuccessMsg(
     name="BOOT_SUCCESS",
     arg_count=0,
     trailing_binary=False,
+    do_broadcast=True,
 ):
     """
     Informs the client that a sandbox has been booted.
@@ -1348,6 +1399,7 @@ class SmdCommServerBootFailedMsg(
     name="BOOT_FAILED",
     arg_count=0,
     trailing_binary=False,
+    do_broadcast=True,
 ):
     """
     Informs the client that booting a sandbox failed.
@@ -1359,6 +1411,7 @@ class SmdCommServerShutdownInprogressMsg(
     name="SHUTDOWN_INPROGRESS",
     arg_count=2,
     trailing_binary=False,
+    do_broadcast=True,
 ):
     """
     Informs the client that a sandbox is being shut down.
@@ -1393,6 +1446,7 @@ class SmdCommServerShutdownSuccessMsg(
     name="SHUTDOWN_SUCCESS",
     arg_count=0,
     trailing_binary=False,
+    do_broadcast=True,
 ):
     """
     Informs the client that a sandbox has been shut down.
@@ -1404,6 +1458,7 @@ class SmdCommServerShutdownFailedMsg(
     name="SHUTDOWN_FAILED",
     arg_count=0,
     trailing_binary=False,
+    do_broadcast=True,
 ):
     """
     Informs the client that shutting down a sandbox failed.
@@ -1415,6 +1470,7 @@ class SmdCommServerCreateFileAckMsg(
     name="CREATE_FILE_ACK",
     arg_count=0,
     trailing_binary=False,
+    do_broadcast=False,
 ):
     """
     Informs the client that a file creation request has been accepted and the
@@ -1427,6 +1483,7 @@ class SmdCommServerCreateFileSuccessMsg(
     name="CREATE_FILE_SUCCESS",
     arg_count=0,
     trailing_binary=False,
+    do_broadcast=False,
 ):
     """
     Informs the client that a file has been created in a sandbox.
@@ -1438,6 +1495,7 @@ class SmdCommServerCreateFileFailedMsg(
     name="CREATE_FILE_FAILED",
     arg_count=0,
     trailing_binary=True,
+    do_broadcast=False,
 ):
     """
     Informs the client that a file creation operation failed.
@@ -1449,6 +1507,7 @@ class SmdCommServerCreateDirSuccessMsg(
     name="CREATE_DIR_SUCCESS",
     arg_count=0,
     trailing_binary=False,
+    do_broadcast=False,
 ):
     """
     Informs the client that a directory has been created in a sandbox.
@@ -1460,6 +1519,7 @@ class SmdCommServerCreateDirFailedMsg(
     name="CREATE_DIR_FAILED",
     arg_count=0,
     trailing_binary=True,
+    do_broadcast=False,
 ):
     """
     Informs the client that a directory creation operation failed.
@@ -1471,6 +1531,7 @@ class SmdCommServerListDirStartMsg(
     name="LIST_DIR_START",
     arg_count=0,
     trailing_binary=False,
+    do_broadcast=False,
 ):
     """
     Informs the client that messages defining a directory's metadata and its
@@ -1483,6 +1544,7 @@ class SmdCommServerListDirEntry(
     name="LIST_DIR_ENTRY",
     arg_count=5,
     trailing_binary=True,
+    do_broadcast=False,
 ):
     """
     Provides file or directory metadata to the client as part of a directory
@@ -1533,6 +1595,7 @@ class SmdCommServerListDirEndMsg(
     name="LIST_DIR_END",
     arg_count=0,
     trailing_binary=False,
+    do_broadcast=False,
 ):
     """
     Informs the client that messages defining a directory's metadata and its
@@ -1545,6 +1608,7 @@ class SmdCommServerListDirFailedMsg(
     name="LIST_DIR_FAILED",
     arg_count=0,
     trailing_binary=False,
+    do_broadcast=False,
 ):
     """
     Informs the client that listing a directory failed.
@@ -1556,6 +1620,7 @@ class SmdCommServerReadFileStartMsg(
     name="READ_FILE_START",
     arg_count=3,
     trailing_binary=False,
+    do_broadcast=False,
 ):
     """
     Informs the frontend that the server is about to send it the contents of
@@ -1596,6 +1661,7 @@ class SmdCommServerReadFileBlockMsg(
     name="READ_FILE_BLOCK",
     arg_count=0,
     trailing_binary=True,
+    do_broadcast=False,
 ):
     """
     Provides a block of a file to the client.
@@ -1607,6 +1673,7 @@ class SmdCommServerReadFileEndMsg(
     name="READ_FILE_END",
     arg_count=0,
     trailing_binary=False,
+    do_broadcast=False,
 ):
     """
     Informs the client that a file has been fully sent.
@@ -1618,6 +1685,7 @@ class SmdCommServerReadFileAbortAckMsg(
     name="READ_FILE_ABORT_ACK",
     arg_count=0,
     trailing_binary=False,
+    do_broadcast=False,
 ):
     """
     Informs the client that a `READ_FILE_ABORT` message has been accepted and
@@ -1630,6 +1698,7 @@ class SmdCommServerReadFileFailedMsg(
     name="READ_FILE_FAILED",
     arg_count=0,
     trailing_binary=True,
+    do_broadcast=False,
 ):
     """
     Informs the client that the file read operation failed.
@@ -1641,6 +1710,7 @@ class SmdCommServerListAppsStartMsg(
     name="LIST_APPS_START",
     arg_count=0,
     trailing_binary=False,
+    do_broadcast=False,
 ):
     """
     Informs the client that the server is about to send an application list.
@@ -1652,6 +1722,7 @@ class SmdCommServerListAppsEntryMsg(
     name="LIST_APPS_ENTRY",
     arg_count=3,
     trailing_binary=False,
+    do_broadcast=False,
 ):
     """
     Provides an application entry to the client.
@@ -1683,6 +1754,7 @@ class SmdCommServerListAppsEndMsg(
     name="LIST_APPS_END",
     arg_count=0,
     trailing_binary=False,
+    do_broadcast=False,
 ):
     """
     Informs the client that the server is done sending an application list.
@@ -1694,6 +1766,7 @@ class SmdCommServerListAppsFailedMsg(
     name="LIST_APPS_FAILED",
     arg_count=0,
     trailing_binary=True,
+    do_broadcast=False,
 ):
     """
     Informs the client that the app listing operation failed.
@@ -1705,6 +1778,7 @@ class SmdCommServerGetAppInfoStartMsg(
     name="GET_APP_INFO_START",
     arg_count=0,
     trailing_binary=False,
+    do_broadcast=False,
 ):
     """
     Informs the client that messages defining an application's info are about
@@ -1717,6 +1791,7 @@ class SmdCommServerAppInfoNameMsg(
     name="APP_INFO_NAME",
     arg_count=1,
     trailing_binary=False,
+    do_broadcast=False,
 ):
     """
     Provides an application's name to the client.
@@ -1730,6 +1805,7 @@ class SmdCommServerAppInfoGenericNameMsg(
     name="APP_INFO_GENERIC_NAME",
     arg_count=1,
     trailing_binary=False,
+    do_broadcast=False,
 ):
     """
     Provides an application's generic name to the client.
@@ -1743,6 +1819,7 @@ class SmdCommServerAppInfoCommentMsg(
     name="APP_INFO_COMMENT",
     arg_count=1,
     trailing_binary=False,
+    do_broadcast=False,
 ):
     """
     Provides an application's comment data to the client.
@@ -1756,6 +1833,7 @@ class SmdCommServerAppInfoExecMsg(
     name="APP_INFO_EXEC",
     arg_count=1,
     trailing_binary=False,
+    do_broadcast=False,
 ):
     """
     Provides an application's execution data to the client.
@@ -1772,6 +1850,7 @@ class SmdCommServerAppInfoWorkDirMsg(
     name="APP_INFO_WORK_DIR",
     arg_count=1,
     trailing_binary=False,
+    do_broadcast=False,
 ):
     """
     Provides an application's working directory to the client.
@@ -1785,6 +1864,7 @@ class SmdCommServerAppInfoMimetypeMsg(
     name="APP_INFO_MIMETYPE",
     arg_count=1,
     trailing_binary=False,
+    do_broadcast=False,
 ):
     """
     Provides a MIME type the application is capable of handling to the client.
@@ -1798,6 +1878,7 @@ class SmdCommServerGetAppInfoEndMsg(
     name="GET_APP_INFO_END",
     arg_count=0,
     trailing_binary=False,
+    do_broadcast=False,
 ):
     """
     Informs the client that messages defining an application's info have been
@@ -1810,6 +1891,7 @@ class SmdCommServerGetAppInfoFailedMsg(
     name="GET_APP_INFO_FAILED",
     arg_count=0,
     trailing_binary=False,
+    do_broadcast=False,
 ):
     """
     Informs the client that getting an application's info failed.
@@ -1821,6 +1903,7 @@ class SmdCommServerExecSuccessMsg(
     name="EXEC_SUCCESS",
     arg_count=0,
     trailing_binary=False,
+    do_broadcast=False,
 ):
     """
     Informs the client that an application has been successfully executed.
@@ -1832,6 +1915,7 @@ class SmdCommServerExecFailedMsg(
     name="EXEC_FAILED",
     arg_count=0,
     trailing_binary=False,
+    do_broadcast=False,
 ):
     """
     Informs the client that an application could not be executed.
@@ -1843,6 +1927,7 @@ class SmdCommServerShellAckMsg(
     name="SHELL_ACK",
     arg_count=0,
     trailing_binary=False,
+    do_broadcast=False,
 ):
     """
     Informs the client that a request to open the sandbox's console has been
@@ -1850,11 +1935,12 @@ class SmdCommServerShellAckMsg(
     """
 
 
-class SmdCommClientShellSbBlockMsg(
-    SmdCommClientMsg,
+class SmdCommServerShellSbBlockMsg(
+    SmdCommServerMsg,
     name="SHELL_SB_BLOCK",
     arg_count=0,
     trailing_binary=True,
+    do_broadcast=False,
 ):
     """
     Sends a block of data from a sandbox's console.
@@ -1866,6 +1952,7 @@ class SmdCommServerShellDisconnectedMsg(
     name="SHELL_DISCONNECTED",
     arg_count=0,
     trailing_binary=False,
+    do_broadcast=False,
 ):
     """
     Informs the client that its connection to a sandbox's console has been
@@ -1878,6 +1965,7 @@ class SmdCommServerShellFailedMsg(
     name="SHELL_FAILED",
     arg_count=0,
     trailing_binary=False,
+    do_broadcast=False,
 ):
     """
     Informs the client that a sandbox's console cannot be connected to.
@@ -2583,9 +2671,7 @@ class SmdSession:
             msg_bytes[:2], byteorder="big", signed=False
         )
         if msg_code >= len(SmdBaseMsg.registry):
-            self.__abort_connection(
-                f"Message code '{msg_code}' out of bounds!"
-            )
+            self.__abort_connection(f"Message code '{msg_code}' out of bounds!")
 
         correlation_id: int = int.from_bytes(
             msg_bytes[2:18], byteorder="big", signed=False
@@ -2768,9 +2854,7 @@ class SmdServerSocket:
                 target_uid: int = user_info.pw_uid
                 target_gid: int = user_info.pw_gid
             except Exception as e:
-                raise ValueError(
-                    f"Account '{user_name}' does not exist"
-                ) from e
+                raise ValueError(f"Account '{user_name}' does not exist") from e
 
             self.backend_socket = socket.socket(family=socket.AF_UNIX)
             self.socket_path = Path(SmdCommon.comm_dir, user_name)

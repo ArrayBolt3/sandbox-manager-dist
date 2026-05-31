@@ -22,9 +22,9 @@ import queue
 from pathlib import Path
 from queue import SimpleQueue
 from threading import Thread, Lock
-from multiprocessing import Process
+from multiprocessing import Process, Pipe
 from multiprocessing.connection import Connection
-from typing import IO, NoReturn
+from typing import IO, NoReturn, Callable, Any
 
 import sdnotify  # type: ignore
 
@@ -34,6 +34,7 @@ import sdnotify  # type: ignore
 # pylint: disable=unused-wildcard-import
 from .common import *
 from .protocol import *
+
 
 # pylint: disable=too-few-public-methods
 class SandboxdGlobal:
@@ -59,6 +60,27 @@ class SandboxdGlobal:
     remove_control_socket_queue: SimpleQueue[SmdServerSocket] = SimpleQueue()
 
 
+class HandlerProc:
+    """
+    A child process spawned using multiprocessing.
+    """
+
+    def __init__(
+        self, correlation_id: int, target_func: Callable[[Connection], None]
+    ) -> None:
+        self.correlation_id = correlation_id
+        ## ptc = parent to child
+        self.ptc_pipe: Connection
+        ## ctp = child to parent
+        self.ctp_pipe: Connection
+        self.ptc_pipe, self.ctp_pipe = Pipe(duplex=True)
+        self.child_proc: Process = Process(
+            target=target_func, args=(self.ctp_pipe,)
+        )
+        self.child_proc.start()
+
+
+# pylint: disable=too-many-instance-attributes
 class SandboxdCommSessionThread:
     """
     All logic used for the server to communicate with a single comm client.
@@ -114,18 +136,14 @@ class SandboxdCommSessionThread:
     ##   so that epoll can be used to wake up the thread when the child has
     ##   something to say.
     ## * Child processes never communicate with clients directly, they always
-    ##   go through this thread to do that.
-    ##
-    ## Correlation ID handling is also slightly tricky; the system we use is:
-    ##
-    ## * For incoming messages where a sandbox's configuration is sent, we have
-    ##   a ConfigPackage object that contains a correlation_id member. When new
-    ##   config data shows up, we just add it to the correct ConfigPackage,
-    ##   then when all config data is sent, we pass the whole package to a
-    ##   child process for handling asynchronously. TODO: make ConfigPackage
-    ## * TODO: Figure out how to handle streaming messages and messages where
-    ##   the client only sends a single message and then expects multiple
-    ##   messages back from the server over a span of time
+    ##   go through this thread to do that. All messages sent back by child
+    ##   processes are messages that are intended to be forwarded to clients.
+    ##   The only messages expected to be sent to child processes are messages
+    ##   received from the client.
+    ## * Each child process has a message correlation ID associated with it.
+    ##   Incoming messages that have a correlation ID matching a running child
+    ##   process are blindly forwarded to that child process; it is the
+    ##   child's responsibility to handle invalid messages correctly.
 
     def __init__(self, comm_session: SmdSession) -> None:
         self.terminate_read_fd: int
@@ -151,6 +169,7 @@ class SandboxdCommSessionThread:
 
         self.comm_session = comm_session
         self.sent_sandbox_state: bool = False
+        self.handler_list: list[HandlerProc] = []
 
         self.internal_thread: Thread = Thread(
             target=self.thread_main_loop, daemon=True
@@ -163,11 +182,6 @@ class SandboxdCommSessionThread:
         """
 
         assert self.comm_session.server_socket_fileno != -1
-        self.sent_sandbox_state: bool = False
-        ## ptc = parent to child
-        mp_ptc_pipe_list: list[Connection] = []
-        ## ctp = child to parent
-        mp_ctp_pipe_list: list[Connection] = []
         epoll_obj: select.epoll = select.epoll()
         epoll_obj.register(self.terminate_read_fd, select.EPOLLIN)
         epoll_obj.register(self.notify_read_fd, select.EPOLLIN)
@@ -177,11 +191,90 @@ class SandboxdCommSessionThread:
 
         while True:
             epoll_event_fd_list: list[int] = [x[0] for x in epoll_obj.poll()]
+            if self.terminate_read_fd in epoll_event_fd_list:
+                break
+            if self.notify_read_fd in epoll_event_fd_list:
+                self.notify_read_pipe.read(1)
+                msg_to_send: SmdBaseMsg = self.notify_queue.get()
+                try:
+                    self.comm_session.send_msg(msg_to_send)
+                except Exception as e:
+                    logging.error(
+                        "Could not send '%s'", msg_to_send.name, exc_info=e
+                    )
+                    break
+                epoll_event_fd_list.remove(self.notify_read_fd)
             if self.comm_session.server_socket_fileno in epoll_event_fd_list:
-                #mp_ptc_pipe: Connection | None
-                #mp_ctp_pipe: Connection | None
-                #mp_ptc_pipe, mp_ctp_pipe = self.handle_new_...
+                try:
+                    self.handle_incoming_message()
+                except Exception as e:
+                    logging.error(
+                        "Could not handle message from client", exc_info=e
+                    )
+                    break
+                epoll_event_fd_list.remove(
+                    self.comm_session.server_socket_fileno
+                )
+            ## All remaining file descriptors are child processes trying to
+            ## send something to a client, handle accordingly
+            for handler_pipe_fd in epoll_event_fd_list:
+                source_handler: HandlerProc | None = None
+                for candidate_handler in self.handler_list:
+                    if candidate_handler.ctp_pipe.fileno() == handler_pipe_fd:
+                        source_handler = candidate_handler
+                        break
+                if source_handler is None:
+                    logging.critical(
+                        "sandboxd lost track of a handler process!"
+                    )
+                    sys.exit(1)
+                recv_obj: Any = source_handler.ctp_pipe.recv()
+                assert isinstance(recv_obj, (SmdCommServerMsg, SmdCommBidiMsg))
+                msg_from_child: SmdCommServerMsg | SmdCommBidiMsg = recv_obj
+                try:
+                    self.comm_session.send_msg(msg_from_child)
+                except Exception as e:
+                    logging.error(
+                        "Could not send '%s'", msg_from_child.name, exc_info=e
+                    )
+                    break
+                self.broadcast_message_maybe(msg_from_child)
 
+    def handle_incoming_message(self) -> None:
+        """
+        Reads an incoming message, and handles or dispatches it to a handler
+        process as appropriate.
+        """
+
+        ## TODO
+
+    def broadcast_message_maybe(
+        self, msg_to_send: SmdCommServerMsg | SmdCommBidiMsg
+    ) -> None:
+        """
+        Checks if a message should be broadcast to some or all connected
+        clients. Sends it to (and wakes up) relevant client threads if needed.
+        """
+
+        if isinstance(msg_to_send, SmdCommServerRestartInprogressMsg):
+            with SandboxdGlobal.session_list_lock:
+                for comm_thread in SandboxdGlobal.comm_session_thread_list:
+                    comm_thread.notify_queue.put(msg_to_send)
+                    while comm_thread.notify_write_pipe.write(b"\x00") == 0:
+                        pass
+        elif (
+            isinstance(msg_to_send, SmdCommBidiMsg) or msg_to_send.do_broadcast
+        ):
+            with SandboxdGlobal.session_list_lock:
+                for comm_thread in SandboxdGlobal.comm_session_thread_list:
+                    if (
+                        comm_thread.comm_session.user_name
+                        != self.comm_session.user_name
+                    ):
+                        continue
+                    comm_thread.notify_queue.put(msg_to_send)
+                    while comm_thread.notify_write_pipe.write(b"\x00") == 0:
+                        pass
 
     def terminate(self) -> None:
         """
@@ -334,9 +427,7 @@ def open_control_socket() -> None:
     """
 
     try:
-        control_socket: SmdServerSocket = SmdServerSocket(
-            SmdSocketType.CONTROL
-        )
+        control_socket: SmdServerSocket = SmdServerSocket(SmdSocketType.CONTROL)
     except Exception as e:
         logging.critical("Failed to open control socket!", exc_info=e)
         sys.exit(1)
@@ -359,9 +450,7 @@ def prep_sock_notify_pipe() -> None:
     )
 
 
-def send_control_msg_safe(
-    session: SmdSession, msg: SmdBaseMsg
-) -> None:
+def send_control_msg_safe(session: SmdSession, msg: SmdBaseMsg) -> None:
     """
     Sends a message, logging an error and otherwise ignoring the issue if the
     message cannot be sent. This is only intended for use by the control
@@ -387,9 +476,8 @@ def handle_control_register_msg(
     if user_name is None:
         logging.warning("Account '%s' does not exist", orig_user_name)
         send_control_msg_safe(
-            control_session, SmdControlServerRegisterFailureMsg(
-                control_msg.correlation_id
-            )
+            control_session,
+            SmdControlServerRegisterFailureMsg(control_msg.correlation_id),
         )
         return
 
@@ -398,12 +486,11 @@ def handle_control_register_msg(
             logging.info(
                 "Handled REGISTER message for account '%s', socket already "
                 + "exists",
-                user_name
+                user_name,
             )
             send_control_msg_safe(
-                control_session, SmdControlServerRegisterExistsMsg(
-                    control_msg.correlation_id
-                )
+                control_session,
+                SmdControlServerRegisterExistsMsg(control_msg.correlation_id),
             )
             return
 
@@ -420,9 +507,8 @@ def handle_control_register_msg(
             user_name,
         )
         send_control_msg_safe(
-            control_session, SmdControlServerRegisterSuccessMsg(
-                control_msg.correlation_id
-            )
+            control_session,
+            SmdControlServerRegisterSuccessMsg(control_msg.correlation_id),
         )
         return
     except Exception as e:
@@ -430,9 +516,8 @@ def handle_control_register_msg(
             "Failed to create socket for account '%s'!", user_name, exc_info=e
         )
         send_control_msg_safe(
-            control_session, SmdControlServerRegisterFailureMsg(
-                control_msg.correlation_id
-            )
+            control_session,
+            SmdControlServerRegisterFailureMsg(control_msg.correlation_id),
         )
         return
 
@@ -469,9 +554,10 @@ def handle_control_unregister_msg(
                     user_name,
                 )
                 send_control_msg_safe(
-                    control_session, SmdControlServerUnregisterSuccessMsg(
+                    control_session,
+                    SmdControlServerUnregisterSuccessMsg(
                         control_msg.correlation_id
-                    )
+                    ),
                 )
                 return
             except Exception as e:
@@ -481,9 +567,10 @@ def handle_control_unregister_msg(
                     exc_info=e,
                 )
                 send_control_msg_safe(
-                    control_session, SmdControlServerUnregisterFailureMsg(
+                    control_session,
+                    SmdControlServerUnregisterFailureMsg(
                         control_msg.correlation_id
-                    )
+                    ),
                 )
                 return
 
@@ -492,9 +579,8 @@ def handle_control_unregister_msg(
         user_name,
     )
     send_control_msg_safe(
-        control_session, SmdControlServerUnregisterAbsentMsg(
-            control_msg.correlation_id
-        )
+        control_session,
+        SmdControlServerUnregisterAbsentMsg(control_msg.correlation_id),
     )
 
 
@@ -506,9 +592,7 @@ def control_handler_loop() -> NoReturn:
     """
 
     while True:
-        control_session: SmdSession = (
-            SandboxdGlobal.control_session_queue.get()
-        )
+        control_session: SmdSession = SandboxdGlobal.control_session_queue.get()
 
     try:
         try:
@@ -609,9 +693,7 @@ def main_loop() -> NoReturn:
                 # pylint: disable=consider-using-with
                 SandboxdGlobal.session_list_lock.acquire()
                 thread_ctr: int = 0
-                while thread_ctr < len(
-                    SandboxdGlobal.comm_session_thread_list
-                ):
+                while thread_ctr < len(SandboxdGlobal.comm_session_thread_list):
                     target_thread: SandboxdCommSessionThread = (
                         SandboxdGlobal.comm_session_thread_list[thread_ctr]
                     )
@@ -622,12 +704,11 @@ def main_loop() -> NoReturn:
                         target_thread.terminate()
                         SandboxdGlobal.comm_session_thread_list.pop(thread_ctr)
                         continue
-                    thread_ctr += 1A
+                    thread_ctr += 1
                 SandboxdGlobal.session_list_lock.release()
                 SandboxdGlobal.socket_list.remove(remove_sock)
             read_sock_fileno_list: list[int] = [
-                sock_obj.fileno()
-                for sock_obj in SandboxdGlobal.socket_list
+                sock_obj.fileno() for sock_obj in SandboxdGlobal.socket_list
             ]
             read_sock_fileno_set: set[int] = set(read_sock_fileno_list)
             for register_fileno in read_sock_fileno_set - epoll_fd_set:

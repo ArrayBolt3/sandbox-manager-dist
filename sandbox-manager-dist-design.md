@@ -1620,14 +1620,23 @@ interface directly.
   Short-lived clients only receive information they explicitly ask for, while
   long-lived clients receive all information about sandboxes belonging to the
   user the client runs as. Long-lived clients also receive live state updates.
-* The server **MUST NOT** leak correlation IDs between multiple clients! For
-  instance, if broadcasting information about a reconfigured sandbox to
-  connected clients, a different correlation ID must be used for the group of
-  messages for every client.
+* The server may leak correlation IDs between multiple clients. This ID has no
+  value in attempting to attack other clients, as it contains no sensitive
+  data and clients cannot break into each other's connections without using
+  something like ptrace (which is restricted on Kicksecure and would allow
+  interfering with connections even if correlation ID isolation was
+  implemented). We may decide to stop reusing correlation IDs across multiple
+  clients in the future if this proves to be unsafe.
+  * TODO: Research if there is any way for this to go wrong. Previously, the
+    design forbade this, but not forbidding it simplifies the server-side code
+    quite a bit.
 * The server **MUST NOT** leak state information between multiple users
   running on the same machine! For instance, if client 1 is running as account
   "user", and client 2 is running as account "bob", information about changes
   made to "bob"'s sandboxes must not be shared with "user".
+  * There is one exception to this rule, `RESTART_INPROGRESS`. This message
+    must be sent to all clients running under all users when it is sent, since
+    all clients will be affected by a disconnect.
 * Many of the features depend on a sandbox-side agent to act on behalf of the
   backend. This agent's source code and startup service are bind-mounted into
   the sandbox on boot, along with an agent UNIX socket that the backend listens
@@ -1660,7 +1669,7 @@ interface directly.
       the client cannot go back to "short-lived mode". Introduces a new
       correlation ID. Takes no arguments. Does not include a binary blob.
       * Note - the correlation ID included with this message is garbage and
-        will be ignored.
+        will be (mostly) ignored.
     * `QUERY_NEED_RESTART` - Asks the backend if it needs to be restarted.
       Introduces a new correlation ID. Takes no arguments. Does not include a
       binary blob.
@@ -1772,8 +1781,12 @@ interface directly.
       binary blob.
     * `RESTART_INPROGRESS` - Informs the frontend that the restart request has
       been accepted and is being processed. Broadcast to all clients whether
-      long-lived or not. Must be correlated to a client-sent `RESTART` message.
-      Takes no arguments. Does not include a binary blob.
+      long-lived or not, this must also be broadcast to clients running under
+      users other than the user that triggered it. Must be correlated to a
+      client-sent `RESTART` message. Takes no arguments. Does not include a
+      binary blob.
+      * Note that there is no `RESTART_SUCCESS` message; the server will
+        disconnect all clients for all users after sending this.
     * `RESTART_DENIED` - Informs the frontend that the restart request has
       been rejected. Must be correlated to a client-sent `RESTART` message.
       Takes no arguments. Does not include a binary blob.
@@ -1863,8 +1876,9 @@ interface directly.
       correlated to a `DELETE_INPROGRESS` message. Takes no arguments.
       Does not include a binary blob.
     * `DELETE_FAILED` - Informs the frontend that attempting to delete a
-      sandbox has failed. Must be correlated to a `DELETE_INPROGRESS` message.
-      Takes no arguments. Does not include a binary blob.
+      sandbox has failed. Broadcast to long-lived clients. Must be correlated
+      to a `DELETE_INPROGRESS` message. Takes no arguments. Does not include a
+      binary blob.
     * `CLONE_INPROGRESS` - Informs the frontend that the sandbox clone request
       has been accepted and is being processed. Broadcast to long-lived
       clients.  Must be correlated to a client-sent `CLONE` message when sent
@@ -1896,8 +1910,9 @@ interface directly.
       to a `BOOT_INPROGRESS` message. Takes no arguments. Does not include a
       binary blob.
     * `BOOT_FAILED` - Informs the frontend that attempting to boot a sandbox
-      has failed. Must be correlated to a `BOOT_INPROGRESS` message.  Takes no
-      arguments. Does not include a binary blob.
+      has failed. Broadcast to long-lived clients. Must be correlated to a
+      `BOOT_INPROGRESS` message.  Takes no arguments. Does not include a
+      binary blob.
     * `SHUTDOWN_INPROGRESS` - Informs the frontend that the shutdown request
       has been accepted and is being processed. Broadcast to long-lived
       clients. Must be correlated to a `SHUTDOWN` message when sent to the
@@ -1909,8 +1924,9 @@ interface directly.
       `SHUTDOWN_INPROGRESS` message. Takes no arguments. Does not include a
       binary blob.
     * `SHUTDOWN_FAILED` - Informs the frontend that attempting to shut down a
-      sandbox has failed. Must be correlated to a `SHUTDOWN_INPROGRESS`
-      message. Takes no arguments. Does not include a binary blob.
+      sandbox has failed. Broadcast to long-lived clients. Must be correlated
+      to a `SHUTDOWN_INPROGRESS` message. Takes no arguments. Does not include
+      a binary blob.
     * `CREATE_FILE_ACK` - Informs the frontend that the file creation request
       has been accepted and the backend is ready to receive file data. Must be
       correlated to a client-sent `CREATE_FILE_BEGIN` message. Takes no
