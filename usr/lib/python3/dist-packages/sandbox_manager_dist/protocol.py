@@ -24,8 +24,6 @@ from .common import (
 )
 
 msg_inc_int: int = 0
-max_vol_size: int = (16 * 1024 * 1024 * 1024 * 1024) - 4096
-max_mem_size: int = 1024 * 1024 * 1024 * 1024
 
 ######################
 # CORE MESSAGE LOGIC #
@@ -2047,7 +2045,7 @@ class SmdCommBidiRootVolSizeMsg(
             "Root volume size failed validation",
         )
         vol_size: int = int(arg_list[0])
-        if not 1 <= vol_size <= max_vol_size:
+        if not 1 <= vol_size <= SmdCommon.max_vol_size:
             raise ValueError("Root volume size out of range")
 
 
@@ -2079,7 +2077,7 @@ class SmdCommBidiDataVolSizeMsg(
             "Data volume size failed validation",
         )
         vol_size: int = int(arg_list[0])
-        if not 1 <= vol_size <= max_vol_size:
+        if not 1 <= vol_size <= SmdCommon.max_vol_size:
             raise ValueError("Data volume size out of range")
 
 
@@ -2111,7 +2109,7 @@ class SmdCommBidiMemoryMsg(
             "Memory size failed validation",
         )
         mem_size: int = int(arg_list[0])
-        if not 1 <= mem_size <= max_mem_size:
+        if not 1 <= mem_size <= SmdCommon.max_mem_size:
             raise ValueError("Memory size out of range")
 
 
@@ -2143,42 +2141,43 @@ class SmdCommBidiCpuWeightMsg(
             "CPU weight failed validation",
         )
         cpu_weight: int = int(arg_list[0])
-        if not 1 <= cpu_weight <= 10000:
+        if not 1 <= cpu_weight <= SmdCommon.max_cpu_weight:
             raise ValueError("CPU weight out of range")
 
 
-class SmdCommBidiCpuCoresMdg(
-    SmdCommBidiMsg,
-    name="CPU_CORES",
-    arg_count=1,
-    trailing_binary=False,
-):
-    """
-    Specifies a sandbox's CPU core count. (Note that this is unused when using
-    namespace-based sandboxing; it is intended for use with VM-based
-    sandboxing in place of CPU_WEIGHT.)
-    """
-
-    def __init__(
-        self,
-        correlation_id: int,
-        arg_list: list[str] | None = None,
-        binary_blob: bytes | None = None,
-    ) -> None:
-        """
-        CPU_CORES init function.
-        """
-
-        super().__init__(correlation_id, arg_list, binary_blob)
-        assert arg_list is not None
-        SmdCommon.validate_id(
-            arg_list[0],
-            [SmdValidateType.DECIMAL_INT],
-            "CPU weight failed validation",
-        )
-        cpu_cores: int = int(arg_list[0])
-        if not 1 <= cpu_cores <= 256:
-            raise ValueError("CPU cores out of range")
+## Commented out until support for VM sandboxing is added.
+#class SmdCommBidiCpuCoresMdg(
+#    SmdCommBidiMsg,
+#    name="CPU_CORES",
+#    arg_count=1,
+#    trailing_binary=False,
+#):
+#    """
+#    Specifies a sandbox's CPU core count. (Note that this is unused when using
+#    namespace-based sandboxing; it is intended for use with VM-based
+#    sandboxing in place of CPU_WEIGHT.)
+#    """
+#
+#    def __init__(
+#        self,
+#        correlation_id: int,
+#        arg_list: list[str] | None = None,
+#        binary_blob: bytes | None = None,
+#    ) -> None:
+#        """
+#        CPU_CORES init function.
+#        """
+#
+#        super().__init__(correlation_id, arg_list, binary_blob)
+#        assert arg_list is not None
+#        SmdCommon.validate_id(
+#            arg_list[0],
+#            [SmdValidateType.DECIMAL_INT],
+#            "CPU weight failed validation",
+#        )
+#        cpu_cores: int = int(arg_list[0])
+#        if not 1 <= cpu_cores <= 256:
+#            raise ValueError("CPU cores out of range")
 
 
 class SmdCommBidiIoWeightMsg(
@@ -2208,8 +2207,8 @@ class SmdCommBidiIoWeightMsg(
             [SmdValidateType.DECIMAL_INT],
             "IO weight failed validation",
         )
-        cpu_weight: int = int(arg_list[0])
-        if not 1 <= cpu_weight <= 10000:
+        io_weight: int = int(arg_list[0])
+        if not 1 <= io_weight <= SmdCommon.max_io_weight:
             raise ValueError("IO weight out of range")
 
 
@@ -2451,7 +2450,7 @@ class SmdCommBidiSharedDeviceMsg(
         assert arg_list is not None
         SmdCommon.validate_id(
             arg_list[0],
-            [SmdValidateType.ABSOLUTE_PATH],
+            [SmdValidateType.DEVICE_PATH],
             "Device path failed validation",
         )
 

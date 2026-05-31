@@ -3,7 +3,7 @@
 # Copyright (C) 2026 - 2026 ENCRYPTED SUPPORT LLC <adrelanos@whonix.org>
 # See the file COPYING for copying conditions.
 
-# pylint: disable=broad-exception-caught
+# pylint: disable=broad-exception-caught, too-many-lines
 
 """
 sandboxd.py - The server component of sandbox-manager-dist. Handles sandbox
@@ -13,13 +13,14 @@ creation, deletion, management, and some forms of IPC.
 ## TODO: Remove this in Debian Forky, Python 3.14+ will no longer require it
 from __future__ import annotations
 
-import sys
-import os
 import logging
-import shutil
-import select
-import queue
 import multiprocessing as mp
+import os
+import queue
+import select
+import shutil
+import sys
+from dataclasses import dataclass
 from multiprocessing.connection import Connection
 from pathlib import Path
 from queue import SimpleQueue
@@ -27,6 +28,9 @@ from threading import Thread, Lock
 from typing import IO, NoReturn, Callable, Any
 
 import sdnotify  # type: ignore
+import schema  # type: ignore
+
+from strict_config_parser import strict_config_parser
 
 ## Wildcard imports are safe here, every object in these modules will actually
 ## be used (eventually) by sandboxd and is named in a safe fashion.
@@ -47,6 +51,7 @@ class SandboxdGlobal:
     pid_file_path: Path = Path(SmdCommon.state_dir, "pid")
     old_umask: int = 0
 
+    sandbox_config_list: list[SandboxConfig] = []
     socket_list: list[SmdServerSocket] = []
     comm_thread_list: list[SandboxdCommThread] = []
     session_list_lock: Lock = Lock()
@@ -62,6 +67,100 @@ class SandboxdGlobal:
     control_session_queue: SimpleQueue[SmdSession] = SimpleQueue()
     add_control_socket_queue: SimpleQueue[SmdServerSocket] = SimpleQueue()
     remove_control_socket_queue: SimpleQueue[SmdServerSocket] = SimpleQueue()
+
+    conf_schema: schema.Schema = schema.Schema(
+        {
+            "name": schema.And(
+                str,
+                schema.Regex(SmdCommon.sandbox_name_regex),
+            ),
+            "description": str,
+            "root_vol_size": schema.And(
+                int,
+                lambda vol_size: 1 <= vol_size <= SmdCommon.max_vol_size,
+            ),
+            "data_vol_size": schema.And(
+                int,
+                lambda vol_size: 1 <= vol_size <= SmdCommon.max_vol_size,
+            ),
+            "memory": schema.And(
+                int,
+                lambda mem_size: 1 <= mem_size <= SmdCommon.max_mem_size,
+            ),
+            "cpu_weight": schema.And(
+                int,
+                lambda cpu_weight: 1 <= cpu_weight <= SmdCommon.max_cpu_weight,
+            ),
+            #"cpu_cores": int,
+            "io_weight": schema.And(
+                int,
+                lambda io_weight: 1 <= io_weight <= SmdCommon.max_io_weight,
+            ),
+            "audio_enabled": bool,
+            "wayland_enabled": bool,
+            "x11_enabled": bool,
+            "three_d_enabled": bool,
+            "network_enabled": bool,
+            "nested_sandboxing_enabled": bool,
+            "shared_fso_list": [
+                {
+                    "read_write": bool,
+                    "host_path": schema.And(
+                        str,
+                        schema.Regex(SmdCommon.absolute_path_regex),
+                    ),
+                    "sandbox_path": schema.And(
+                        str,
+                        schema.Regex(SmdCommon.absolute_path_regex),
+                    ),
+                },
+            ],
+            "shared_device_list": [
+                schema.And(
+                    str,
+                    schema.Regex(SmdCommon.device_path_regex),
+                ),
+            ],
+        }
+    )
+
+
+@dataclass
+class SharedFsoConfig:
+    """
+    Configuration info for a shared folder or file.
+    """
+
+    read_write: bool
+    host_path: str
+    sandbox_path: str
+
+
+# pylint: disable=too-many-instance-attributes
+@dataclass
+class SandboxConfig:
+    """
+    Configuration info for a sandbox.
+    """
+
+    uuid: str
+    user_uid: int
+    name: str
+    description: str
+    root_vol_size: int
+    data_vol_size: int
+    memory: int
+    cpu_weight: int
+    #cpu_cores: int
+    io_weight: int
+    audio_enabled: bool
+    wayland_enabled: bool
+    x11_enabled: bool
+    three_d_enabled: bool  ## can't have number at start of var name
+    network_enabled: bool
+    nested_sandboxing_enabled: bool
+    shared_fso_list: list[SharedFsoConfig]
+    shared_device_list: list[str]
 
 
 class HandlerProc:
@@ -113,14 +212,14 @@ class NspawnManager:
         self.child_proc.start()
 
 
+@dataclass
 class SandboxdCommThreadShutdown:
     """
     Simple wrapper class used by comm threads to tell other comm threads that
     one is shutting down.
     """
 
-    def __init__(self, shutdown_thread: SandboxdCommThread) -> None:
-        self.shutdown_thread: SandboxdCommThread = shutdown_thread
+    shutdown_thread: SandboxdCommThread
 
 
 # pylint: disable=too-many-instance-attributes
@@ -427,8 +526,13 @@ class SandboxdCommThread:
         Handles SYNC messages.
         """
 
+        ## WARNING: This function MUST be implemented in a synchronous
+        ## fashion. We need to send the state of sandboxes on the system at
+        ## the time this function was called, accumulating any state changes
+        ## in the notify queue. This prevents the client from receiving partial
+        ## state information if started in the middle of other activity.
+
         assert isinstance(client_msg, SmdCommClientSyncMsg)
-        ## TODO
 
     def client_query_need_restart(self, client_msg: SmdCommClientMsg) -> None:
         """
@@ -597,6 +701,202 @@ def open_control_socket() -> None:
         sys.exit(1)
 
     SandboxdGlobal.socket_list.append(control_socket)
+
+
+def prepare_sandbox_dir() -> None:
+    """
+    Ensures the sandbox dir exists, is a directory, and has the correct
+    ownership and permissions.
+    """
+
+    if not SmdCommon.sandbox_dir.exists():
+        try:
+            SmdCommon.sandbox_dir.mkdir(parents=True)
+        except Exception as e:
+            logging.critical(
+                "Sandbox dir '%s' does not exist and cannot be created!",
+                SmdCommon.sandbox_dir,
+                exc_info=e
+            )
+            sys.exit(1)
+    elif not SmdCommon.sandbox_dir.is_dir():
+        logging.critical(
+            "Sandbox dir '%s' exists but is not a directory!",
+            SmdCommon.sandbox_dir,
+        )
+
+    stat_info: os.stat_result = os.stat(SmdCommon.sandbox_dir)
+    if stat_info.st_uid != 0:
+        logging.critical(
+            "Sandbox dir '%s' exists but is owned by UID %s instead of UID 0!",
+            SmdCommon.sandbox_dir,
+            stat_info.st_uid,
+        )
+        sys.exit(1)
+    if stat_info.st_gid != 0:
+        logging.critical(
+            "Sandbox dir '%s' exists but is owned by GID %s instead of GID 0!",
+            SmdCommon.sandbox_dir,
+            stat_info.st_uid,
+        )
+        sys.exit(1)
+    dir_mode: int = stat_info.st_mode & 0x777
+    if dir_mode != 0o700:
+        logging.critical(
+            "Sandbox dir '%s' exists but has permissions %s rather than "
+            + "permissions 0o755!",
+            SmdCommon.sandbox_dir,
+            dir_mode
+        )
+        sys.exit(1)
+
+
+def validate_sandbox_repo() -> None:
+    """
+    Validates that all sandboxes directories have expected contents.
+    """
+
+    for sandbox_user_path in SmdCommon.sandbox_dir.iterdir():
+        try:
+            SmdCommon.validate_id(
+                sandbox_user_path.name,
+                [SmdValidateType.USER_UID],
+                "Sandbox user dir name is not a UID",
+            )
+        except ValueError as e:
+            logging.critical(
+                "Invalid sandbox user dir '%s'!",
+                sandbox_user_path,
+                exc_info=e,
+            )
+            sys.exit(1)
+
+        if not sandbox_user_path.is_dir():
+            logging.critical(
+                "'%s' is not a directory, but should be a sandbox user "
+                + "directory!",
+                sandbox_user_path,
+            )
+            sys.exit(1)
+
+        for sandbox_path in sandbox_user_path.iterdir():
+            try:
+                SmdCommon.validate_id(
+                    sandbox_path.name,
+                    [SmdValidateType.UUID],
+                    "Sandbox name is not a UUID",
+                )
+            except ValueError as e:
+                logging.critical(
+                    "Invalid sandbox dir '%s'!",
+                    sandbox_path,
+                    exc_info=e,
+                )
+
+            if not sandbox_path.is_dir():
+                logging.critical(
+                    "'%s' is not a directory, but should be a sandbox "
+                    + "directory!",
+                    sandbox_path,
+                )
+                sys.exit(1)
+
+            for file_type, file_path in [
+                ("root", Path(sandbox_path, SmdCommon.sandbox_root_file)),
+                ("data", Path(sandbox_path, SmdCommon.sandbox_data_file)),
+                ("config", Path(sandbox_path, SmdCommon.sandbox_config_file)),
+            ]:
+                if not file_path.is_file():
+                    logging.critical(
+                        "Sandbox %s file '%s' does not exist or is not a "
+                        + "file!",
+                        file_type,
+                        file_path,
+                    )
+                    sys.exit(1)
+
+
+def load_sandbox_config() -> None:
+    """
+    Loads the configuration files for all sandboxes.
+    """
+
+    for sandbox_user_path in SmdCommon.sandbox_dir.iterdir():
+        for sandbox_path in sandbox_user_path.iterdir():
+            config_path: Path = Path(
+                sandbox_path, SmdCommon.sandbox_config_file
+            )
+            try:
+                config_dict: dict[str, Any] = (
+                    strict_config_parser.parse_config_files(
+                        conf_item_list=[str(config_path)],
+                        conf_schema=SandboxdGlobal.conf_schema,
+                    )
+                )
+            except Exception as e:
+                logging.critical(
+                    "Could not load config file '%s'!", config_path, exc_info=e
+                )
+                sys.exit(1)
+
+            ## All the asserts here are just to make mypy happy.
+            assert isinstance(config_dict["name"], str)
+            assert isinstance(config_dict["description"], str)
+            assert isinstance(config_dict["root_vol_size"], int)
+            assert isinstance(config_dict["data_vol_size"], int)
+            assert isinstance(config_dict["memory"], int)
+            assert isinstance(config_dict["cpu_weight"], int)
+            #assert isinstance(config_dict["cpu_cores"], int)
+            assert isinstance(config_dict["io_weight"], int)
+            assert isinstance(config_dict["audio_enabled"], bool)
+            assert isinstance(config_dict["wayland_enabled"], bool)
+            assert isinstance(config_dict["x11_enabled"], bool)
+            assert isinstance(config_dict["three_d_enabled"], bool)
+            assert isinstance(config_dict["network_enabled"], bool)
+            assert isinstance(config_dict["nested_sandboxing_enabled"], bool)
+            assert isinstance(config_dict["shared_fso_list"], list)
+            assert isinstance(config_dict["shared_device_list"], list)
+            assert all(
+                isinstance(x, str) for x in config_dict["shared_device_list"]
+            )
+
+            shared_fso_list: list[SharedFsoConfig] = []
+            for shared_fso_blob in config_dict["shared_fso_list"]:
+                assert isinstance(shared_fso_blob["read_write"], bool)
+                assert isinstance(shared_fso_blob["host_path"], str)
+                assert isinstance(shared_fso_blob["sandbox_path"], str)
+                shared_fso_list.append(
+                    SharedFsoConfig(
+                        shared_fso_blob["read_write"],
+                        shared_fso_blob["host_path"],
+                        shared_fso_blob["sandbox_path"],
+                    )
+                )
+
+            SandboxdGlobal.sandbox_config_list.append(
+                SandboxConfig(
+                    uuid=sandbox_path.name,
+                    user_uid=int(sandbox_user_path.name),
+                    name=config_dict["name"],
+                    description=config_dict["description"],
+                    root_vol_size=config_dict["root_vol_size"],
+                    data_vol_size=config_dict["data_vol_size"],
+                    memory=config_dict["memory"],
+                    cpu_weight=config_dict["cpu_weight"],
+                    #cpu_cores=config_dict["cpu_cores"],
+                    io_weight=config_dict["io_weight"],
+                    audio_enabled=config_dict["audio_enabled"],
+                    wayland_enabled=config_dict["wayland_enabled"],
+                    x11_enabled=config_dict["x11_enabled"],
+                    three_d_enabled=config_dict["three_d_enabled"],
+                    network_enabled=config_dict["network_enabled"],
+                    nested_sandboxing_enabled=config_dict[
+                        "nested_sandboxing_enabled"
+                    ],
+                    shared_fso_list=shared_fso_list,
+                    shared_device_list=config_dict["shared_device_list"],
+                )
+            )
 
 
 def prep_sock_notify_pipe() -> None:
@@ -936,6 +1236,9 @@ def main() -> NoReturn:
     verify_not_running_twice()
     cleanup_old_state_dir()
     populate_state_dir()
+    prepare_sandbox_dir()
+    validate_sandbox_repo()
+    load_sandbox_config()
     open_control_socket()
     prep_sock_notify_pipe()
     control_handler_thread: Thread = Thread(

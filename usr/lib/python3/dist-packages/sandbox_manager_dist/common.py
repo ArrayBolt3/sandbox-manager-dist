@@ -36,6 +36,7 @@ class SmdValidateType(Enum):
     DECIMAL_INT = 13
     YN_BOOL = 14
     WRITE_STATUS = 15
+    DEVICE_PATH=16
 
 
 class SmdSocketType(Enum):
@@ -53,6 +54,10 @@ class SmdCommon:
     """
 
     state_dir: Path = Path("/run/sandbox-manager-dist")
+    sandbox_dir: Path = Path("/home/sandbox-manager-dist")
+    sandbox_root_file: str = "root.img"
+    sandbox_data_file: str = "data.img"
+    sandbox_config_file: str = "config"
     control_path: Path = Path(state_dir, "control")
     comm_dir: Path = Path(state_dir, "comm")
 
@@ -66,6 +71,7 @@ class SmdCommon:
     shutdown_mode_regex: re.Pattern[str] = re.compile(r"(shutdown|kill)\Z")
     file_perm_regex: re.Pattern[str] = re.compile(r"[0-7]{4}\Z")
     absolute_path_regex: re.Pattern[str] = re.compile(r"/[^\x00]*\Z")
+    device_path_regex: re.Pattern[str] = re.compile(r"/dev/[^\x00]+\Z")
     # relative_path_regex: re.Pattern[str] = re.compile(r"[^\x00]+\Z")
     desktop_file_regex: re.Pattern[str] = re.compile(r".+\.desktop\Z")
     file_type_regex: re.Pattern[str] = re.compile(r"(f|d)\Z")
@@ -73,6 +79,10 @@ class SmdCommon:
     decimal_int_regex: re.Pattern[str] = re.compile(r"[0-9]+\Z")
     yn_bool_regex: re.Pattern[str] = re.compile(r"(y|n)\Z")
     write_status_regex: re.Pattern[str] = re.compile(r"(RW|RO)\Z")
+    max_vol_size: int = (16 * 1024 * 1024 * 1024 * 1024) - 4096
+    max_mem_size: int = 1024 * 1024 * 1024 * 1024
+    max_cpu_weight: int = 10000
+    max_io_weight: int = 10000
 
     @staticmethod
     def validate_id(
@@ -113,6 +123,8 @@ class SmdCommon:
                     target_regex = SmdCommon.absolute_path_regex
                 # case SmdValidateType.RELATIVE_PATH:
                 #    target_regex = SmdCommon.relative_path_regex
+                case SmdValidateType.DEVICE_PATH:
+                    target_regex = SmdCommon.device_path_regex
                 case SmdValidateType.DESKTOP_FILE:
                     target_regex = SmdCommon.desktop_file_regex
                 case SmdValidateType.FILE_TYPE:

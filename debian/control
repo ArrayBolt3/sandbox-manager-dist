@@ -12,10 +12,15 @@ Vcs-Git: https://github.com/Kicksecure/sandbox-manager-dist.git
 Standards-Version: 4.7.2
 Rules-Requires-Root: no
 
+## python3-tomli-w is suggested by Python's documentation for writing TOML
+## files. See https://docs.python.org/3/library/tomllib.html.
 Package: sandbox-manager-dist
 Architecture: all
 Depends: mmdebstrap,
          python3,
+         python3-schema,
+         python3-tomli-w,
+         helper-scripts,
          systemd-container,
          ${misc:Depends}
 Description: Namespace-based environment isolation for Linux
