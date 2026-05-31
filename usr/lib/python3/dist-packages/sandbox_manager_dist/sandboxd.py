@@ -20,6 +20,7 @@ import shutil
 import select
 import queue
 import multiprocessing as mp
+from multiprocessing.connection import Connection
 from pathlib import Path
 from queue import SimpleQueue
 from threading import Thread, Lock
@@ -36,6 +37,7 @@ from .protocol import *
 
 from .nspawn_manager import nspawn_manager_main
 
+
 # pylint: disable=too-few-public-methods
 class SandboxdGlobal:
     """
@@ -46,7 +48,7 @@ class SandboxdGlobal:
     old_umask: int = 0
 
     socket_list: list[SmdServerSocket] = []
-    comm_session_thread_list: list[SandboxdCommSessionThread] = []
+    comm_thread_list: list[SandboxdCommThread] = []
     session_list_lock: Lock = Lock()
     nspawn_manager_list: list[NspawnManager] = []
 
@@ -68,15 +70,15 @@ class HandlerProc:
     """
 
     def __init__(
-        self, correlation_id: int, target_func: Callable[[mp.Connection], None]
+        self, correlation_id: int, target_func: Callable[[Connection], None]
     ) -> None:
         self.correlation_id = correlation_id
         ## ptc = parent to child
-        self.ptc_pipe: mp.Connection
+        self.ptc_pipe: Connection
         ## ctp = child to parent
-        self.ctp_pipe: mp.Connection
+        self.ctp_pipe: Connection
         self.ptc_pipe, self.ctp_pipe = mp.Pipe(duplex=True)
-        self.child_proc: Process = mp.Process(
+        self.child_proc: mp.Process = mp.Process(
             target=target_func, args=(self.ctp_pipe,)
         )
         self.child_proc.start()
@@ -88,9 +90,7 @@ class NspawnManager:
     bootup.
     """
 
-    def __init__(
-        self, sandbox_uuid: str, boot_mode: str
-    ) -> None:
+    def __init__(self, sandbox_uuid: str, boot_mode: str) -> None:
         SmdCommon.validate_id(
             sandbox_uuid, [SmdValidateType.UUID], "UUID failed validation"
         )
@@ -102,20 +102,29 @@ class NspawnManager:
         self.sandbox_uuid: str = sandbox_uuid
         self.boot_mode = boot_mode
         ## ptc = parent to child
-        self.ptc_pipe: mp.Connection
+        self.ptc_pipe: Connection
         ## ctp = child to parent
-        self.ctp_pipe: mp.Connection
+        self.ctp_pipe: Connection
         self.ptc_pipe, self.ctp_pipe = mp.Pipe(duplex=True)
-        self.child_proc: Process = mp.Process(
-            target=nspawn_manager_main, args=(
-                self.ctp_pipe, sandbox_uuid, boot_mode
-            )
+        self.child_proc: mp.Process = mp.Process(
+            target=nspawn_manager_main,
+            args=(self.ctp_pipe, sandbox_uuid, boot_mode),
         )
         self.child_proc.start()
 
 
+class SandboxdCommThreadShutdown:
+    """
+    Simple wrapper class used by comm threads to tell other comm threads that
+    one is shutting down.
+    """
+
+    def __init__(self, shutdown_thread: SandboxdCommThread) -> None:
+        self.shutdown_thread: SandboxdCommThread = shutdown_thread
+
+
 # pylint: disable=too-many-instance-attributes
-class SandboxdCommSessionThread:
+class SandboxdCommThread:
     """
     All logic used for the server to communicate with a single comm client.
     Control clients are handled by a dedicated function that works with only
@@ -153,15 +162,17 @@ class SandboxdCommSessionThread:
     ##   default; a termiante read fd, a notify read fd, and the read fd of the
     ##   session the thread handles.
     ## * For receiving notifications from other threads, a notify queue is
-    ##   provided. Threads write messages directly into this queue, and expect
-    ##   the target thread to send them unmodified, in order, at some point.
-    ##   Correlation IDs avert any problems with this kind of multiplexing.
+    ##   provided. This can be used for both internal communication and message
+    ##   broadcasts. When used for broadcasting messages, the messages in the
+    ##   queue are expected to be sent unmodified, in order, at some point,
+    ##   after checking if they are appropriate to send. Correlation IDs avert
+    ##   any problems with this kind of multiplexing.
     ## * Any session thread can write into any other session thread's notify
     ##   write pipe and notification queue without locking (Python handles any
     ##   needed locking for us here). However, when iterating through the list
     ##   of sessions, each session thread MUST lock
     ##   SandboxdGlobal.session_list_lock to avoid racing the main thread.
-    ## * For specific "trivial" situations, we handle them synchronously in
+    ## * For specific "trivial" situations, we handle messages synchronously in
     ##   this thread. Examples include handling very trivial messages (i.e.
     ##   QUERY_NEED_RESTART), permissions handling, and letting clients know
     ##   that a long-running process has started.
@@ -190,6 +201,7 @@ class SandboxdCommSessionThread:
     ##   blindly forwarded, the protocol here is custom.
 
     def __init__(self, comm_session: SmdSession) -> None:
+        ## Notification pipe used to tell this thread when to shut down.
         self.terminate_read_fd: int
         self.terminate_write_fd: int
         self.terminate_read_fd, self.terminate_write_fd = os.pipe()
@@ -200,6 +212,7 @@ class SandboxdCommSessionThread:
             self.terminate_write_fd, "wb", buffering=0
         )
 
+        ## Notification pipe and queue used for broadcast messages.
         self.notify_read_fd: int
         self.notify_write_fd: int
         self.notify_read_fd, self.notify_write_fd = os.pipe()
@@ -209,17 +222,39 @@ class SandboxdCommSessionThread:
         self.notify_write_pipe: IO[bytes] = os.fdopen(
             self.notify_write_fd, "wb", buffering=0
         )
-        self.notify_queue: SimpleQueue[SmdBaseMsg] = SimpleQueue()
+        self.notify_queue: SimpleQueue[
+            SmdBaseMsg | SandboxdCommThreadShutdown
+        ] = SimpleQueue()
 
+        ## The underlying connection to the client.
         self.comm_session = comm_session
-        self.sent_sandbox_state: bool = False
+
+        ## Whether the client should have broadcast messages sent to it.
+        self.client_is_long_running: bool = False
+
+        ## Actively running handler processes.
         self.handler_list: list[HandlerProc] = []
+
+        ## A list of threads we can broadcast config messages to.
+        self.config_broadcast_thread_list: list[SandboxdCommThread] = []
+
+        ## Specifies which functions correlate to which client-sent messages.
+        self.message_handler_map: dict[
+            type[SmdBaseMsg], Callable[[SmdCommClientMsg], None]
+        ] = {
+            SmdCommClientSyncMsg: self.client_sync_handler,
+            SmdCommClientQueryNeedRestartMsg: self.client_query_need_restart,
+            ## TODO: add more handlers here
+        }
 
         self.internal_thread: Thread = Thread(
             target=self.thread_main_loop, daemon=True
         )
         self.internal_thread.start()
 
+    ## A lot of this code has to call 'break', making it difficult to break
+    ## into separate functions without making readability worse.
+    # pylint: disable=too-many-branches, too-many-statements
     def thread_main_loop(self) -> None:
         """
         The thread's main function.
@@ -237,17 +272,30 @@ class SandboxdCommSessionThread:
             epoll_event_fd_list: list[int] = [x[0] for x in epoll_obj.poll()]
             if self.terminate_read_fd in epoll_event_fd_list:
                 break
+
             if self.notify_read_fd in epoll_event_fd_list:
                 self.notify_read_pipe.read(1)
-                msg_to_send: SmdBaseMsg = self.notify_queue.get()
-                try:
-                    self.comm_session.send_msg(msg_to_send)
-                except Exception as e:
-                    logging.error(
-                        "Could not send '%s'", msg_to_send.name, exc_info=e
-                    )
-                    break
+                notify_obj: SmdBaseMsg | SandboxdCommThreadShutdown = (
+                    self.notify_queue.get()
+                )
+                if isinstance(notify_obj, SmdBaseMsg):
+                    try:
+                        self.comm_session.send_msg(notify_obj)
+                    except Exception as e:
+                        logging.error(
+                            "Could not send '%s'", notify_obj.name, exc_info=e
+                        )
+                        break
+                else:  ## isinstance(notify_obj, SandboxdCommThreadShutdown)
+                    if (
+                        notify_obj.shutdown_thread
+                        in self.config_broadcast_thread_list
+                    ):
+                        self.config_broadcast_thread_list.remove(
+                            notify_obj.shutdown_thread
+                        )
                 epoll_event_fd_list.remove(self.notify_read_fd)
+
             if self.comm_session.server_socket_fileno in epoll_event_fd_list:
                 try:
                     self.handle_incoming_message()
@@ -259,6 +307,7 @@ class SandboxdCommSessionThread:
                 epoll_event_fd_list.remove(
                     self.comm_session.server_socket_fileno
                 )
+
             ## All remaining file descriptors are child processes trying to
             ## send something to a client, handle accordingly
             for handler_pipe_fd in epoll_event_fd_list:
@@ -295,13 +344,29 @@ class SandboxdCommSessionThread:
             single_handler.ptc_pipe.close()
         self.handler_list.clear()
 
+        ## Notify all other threads that this thread is shutting down so they
+        ## can perform any needed cleanup.
+        with SandboxdGlobal.session_list_lock:
+            for comm_thread in SandboxdGlobal.comm_thread_list:
+                comm_thread.notify_queue.put(SandboxdCommThreadShutdown(self))
+                while comm_thread.notify_write_pipe.write(b"\x00") == 0:
+                    pass
+
     def handle_incoming_message(self) -> None:
         """
-        Reads an incoming message, and handles or dispatches it to a handler
-        process as appropriate.
+        Reads an incoming message, and dispatches it to a handler function.
         """
 
-        ## TODO
+        client_msg: SmdBaseMsg = self.comm_session.get_msg()
+        if type(client_msg) not in self.message_handler_map:
+            raise ConnectionError(
+                f"No handler for message type '{str(type(client_msg))}'"
+            )
+        assert isinstance(client_msg, SmdCommClientMsg)
+        handler_func: Callable[[SmdCommClientMsg], None] = (
+            self.message_handler_map[type(client_msg)]
+        )
+        handler_func(client_msg)
 
     def broadcast_message_maybe(
         self, msg_to_send: SmdCommServerMsg | SmdCommBidiMsg
@@ -313,7 +378,7 @@ class SandboxdCommSessionThread:
 
         if isinstance(msg_to_send, SmdCommServerRestartInprogressMsg):
             with SandboxdGlobal.session_list_lock:
-                for comm_thread in SandboxdGlobal.comm_session_thread_list:
+                for comm_thread in SandboxdGlobal.comm_thread_list:
                     comm_thread.notify_queue.put(msg_to_send)
                     while comm_thread.notify_write_pipe.write(b"\x00") == 0:
                         pass
@@ -321,15 +386,59 @@ class SandboxdCommSessionThread:
             isinstance(msg_to_send, SmdCommBidiMsg) or msg_to_send.do_broadcast
         ):
             with SandboxdGlobal.session_list_lock:
-                for comm_thread in SandboxdGlobal.comm_session_thread_list:
+                for comm_thread in SandboxdGlobal.comm_thread_list:
                     if (
                         comm_thread.comm_session.user_name
                         != self.comm_session.user_name
                     ):
                         continue
+                    if not comm_thread.client_is_long_running:
+                        continue
+
+                    if isinstance(
+                        msg_to_send,
+                        (
+                            SmdCommServerCreateInprogressMsg,
+                            SmdCommServerConfigInprogressMsg,
+                            SmdCommServerCreateSuccessMsg,
+                            SmdCommServerCreateFailedMsg,
+                            SmdCommServerConfigSuccessMsg,
+                            SmdCommServerConfigFailedMsg,
+                        ),
+                    ):
+                        self.config_broadcast_thread_list.append(comm_thread)
+                    elif isinstance(
+                        msg_to_send,
+                        (
+                            SmdCommBidiMsg,
+                            SmdCommServerConfigInfoStartMsg,
+                            SmdCommServerConfigInfoEndMsg,
+                        ),
+                    ):
+                        if comm_thread not in self.config_broadcast_thread_list:
+                            continue
+
                     comm_thread.notify_queue.put(msg_to_send)
                     while comm_thread.notify_write_pipe.write(b"\x00") == 0:
                         pass
+
+    def client_sync_handler(self, client_msg: SmdCommClientMsg) -> None:
+        """
+        Handles SYNC messages.
+        """
+
+        assert isinstance(client_msg, SmdCommClientSyncMsg)
+        ## TODO
+
+    def client_query_need_restart(self, client_msg: SmdCommClientMsg) -> None:
+        """
+        Handles QUERY_NEED_RESTART messages.
+        """
+
+        assert isinstance(client_msg, SmdCommClientQueryNeedRestartMsg)
+        ## TODO
+
+    ## TODO: add more handlers here
 
     def terminate(self) -> None:
         """
@@ -704,9 +813,7 @@ def handle_comm_socket_conn(comm_socket: SmdServerSocket) -> None:
         )
         return
 
-    SandboxdGlobal.comm_session_thread_list.append(
-        SandboxdCommSessionThread(comm_session)
-    )
+    SandboxdGlobal.comm_thread_list.append(SandboxdCommThread(comm_session))
 
 
 def main_loop() -> NoReturn:
@@ -748,16 +855,16 @@ def main_loop() -> NoReturn:
                 # pylint: disable=consider-using-with
                 SandboxdGlobal.session_list_lock.acquire()
                 thread_ctr: int = 0
-                while thread_ctr < len(SandboxdGlobal.comm_session_thread_list):
-                    target_thread: SandboxdCommSessionThread = (
-                        SandboxdGlobal.comm_session_thread_list[thread_ctr]
+                while thread_ctr < len(SandboxdGlobal.comm_thread_list):
+                    target_thread: SandboxdCommThread = (
+                        SandboxdGlobal.comm_thread_list[thread_ctr]
                     )
                     if (
                         target_thread.comm_session.server_socket_fileno
                         == remove_sock.fileno()
                     ):
                         target_thread.terminate()
-                        SandboxdGlobal.comm_session_thread_list.pop(thread_ctr)
+                        SandboxdGlobal.comm_thread_list.pop(thread_ctr)
                         continue
                     thread_ctr += 1
                 SandboxdGlobal.session_list_lock.release()

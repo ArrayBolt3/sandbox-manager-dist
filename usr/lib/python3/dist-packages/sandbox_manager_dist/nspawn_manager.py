@@ -15,6 +15,7 @@ not go through nspawn_manager.py.
 
 from multiprocessing.connection import Connection
 
+
 def nspawn_manager_main(
     ctp_pipe: Connection, sandbox_uuid: str, boot_mode: str
 ) -> None:
