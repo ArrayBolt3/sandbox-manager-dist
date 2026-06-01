@@ -1,0 +1,57 @@
+#!/bin/bash
+
+## Copyright (C) 2026 - 2026 ENCRYPTED SUPPORT LLC <adrelanos@whonix.org>
+## See the file COPYING for copying conditions.
+
+if [ -f /usr/libexec/helper-scripts/pre.bsh ]; then
+   source /usr/libexec/helper-scripts/pre.bsh
+fi
+
+set -e
+
+true "
+#####################################################################
+## INFO: BEGIN: $DPKG_MAINTSCRIPT_PACKAGE $DPKG_MAINTSCRIPT_NAME $*
+#####################################################################
+"
+
+create_restart_flag_maybe() {
+  [ -d /run/sandbox-manager-dist ] || return 0
+  [ -f /run/sandbox-manager-dist/pid ] || return 0
+  smd_pid="$(cat /run/sandbox-manager-dist/pid)"
+  [[ "${smd_pid}" =~ ^[0-9]+$ ]] || return 0
+  kill -0 -- "${smd_pid}" || return 0
+  touch /run/sandbox-manager-dist/restart-required
+}
+
+case "$1" in
+  configure)
+    create_restart_flag_maybe
+  ;;
+
+  abort-upgrade|abort-remove|abort-deconfigure)
+  ;;
+
+  triggered)
+  ;;
+
+  *)
+    echo "$DPKG_MAINTSCRIPT_NAME called with unknown argument \`$1'" >&2
+    exit 1
+  ;;
+esac
+
+true "INFO: debhelper beginning here."
+
+#DEBHELPER#
+
+true "INFO: Done with debhelper."
+
+true "
+#####################################################################
+## INFO: END  : $DPKG_MAINTSCRIPT_PACKAGE $DPKG_MAINTSCRIPT_NAME $*
+#####################################################################
+"
+
+## Explicitly "exit 0", so eventually trapped errors can be ignored.
+exit 0

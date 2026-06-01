@@ -51,9 +51,13 @@ class SandboxdGlobal:
     """
 
     pid_file_path: Path = Path(SmdCommon.state_dir, "pid")
+    restart_required_file_path: Path = Path(
+        SmdCommon.state_dir, "restart-required"
+    )
     old_umask: int = 0
 
     sandbox_state_list: list[SandboxState] = []
+    sandbox_state_list_lock: Lock = Lock()
     ## Backup sandbox config only exists when a sandbox is reconfigured via
     ## a CONFIG_START ... CONFIG_END message block from the client. This is
     ## because this is the only situation where a sandbox has two config states
@@ -153,7 +157,7 @@ class SandboxState:
     """
 
     uuid: str
-    user_uid: int
+    user_id_numeric: int
     name: str
     description: str
     root_vol_size: int
@@ -179,7 +183,7 @@ class DamagedSandboxInfo:
     Information about damaged sandboxes.
     """
 
-    user_uid: int
+    user_id_numeric: int
     path: str
 
 
@@ -362,7 +366,10 @@ class SandboxdCommThread:
             type[SmdBaseMsg], Callable[[SmdCommClientMsg], None]
         ] = {
             SmdCommClientSyncMsg: self.client_sync_handler,
-            SmdCommClientQueryNeedRestartMsg: self.client_query_need_restart,
+            SmdCommClientQueryNeedRestartMsg: (
+                self.client_query_need_restart_handler
+            ),
+            SmdCommClientRestartMsg: self.client_restart_handler,
             ## TODO: add more handlers here
         }
 
@@ -404,6 +411,18 @@ class SandboxdCommThread:
                         logging.error(
                             "Could not send '%s'", notify_obj.name, exc_info=e
                         )
+                        break
+                    ## HACK: We want all threads to terminate after sending a
+                    ## RESTART_INPROGRESS message, but we need those threads to
+                    ## actually send the RESTART_INPROGRESS message to their
+                    ## connected clients first. Therefore the thread that
+                    ## starts the shutdown can't just call terminate() on all
+                    ## other threads. Instead, the thread detects when it has
+                    ## just sent a RESTART_INPROGRESS message, and shuts itself
+                    ## down if so.
+                    if isinstance(
+                        notify_obj, SmdCommServerRestartInprogressMsg
+                    ):
                         break
                 else:  ## isinstance(notify_obj, SandboxdCommThreadShutdown)
                     if (
@@ -496,6 +515,8 @@ class SandboxdCommThread:
         if isinstance(msg_to_send, SmdCommServerRestartInprogressMsg):
             with SandboxdGlobal.session_list_lock:
                 for comm_thread in SandboxdGlobal.comm_thread_list:
+                    if comm_thread == self:
+                        continue
                     comm_thread.notify_queue.put(msg_to_send)
                     while comm_thread.notify_write_pipe.write(b"\x00") == 0:
                         pass
@@ -504,9 +525,11 @@ class SandboxdCommThread:
         ):
             with SandboxdGlobal.session_list_lock:
                 for comm_thread in SandboxdGlobal.comm_thread_list:
+                    if comm_thread == self:
+                        continue
                     if (
-                        comm_thread.comm_session.user_name
-                        != self.comm_session.user_name
+                        comm_thread.comm_session.user_id_numeric
+                        != self.comm_session.user_id_numeric
                     ):
                         continue
                     if not comm_thread.client_is_long_running:
@@ -567,9 +590,10 @@ class SandboxdCommThread:
 
         assert isinstance(client_msg, SmdCommClientSyncMsg)
 
-        sandbox_state_copy: list[SandboxState] = copy.deepcopy(
-            SandboxdGlobal.sandbox_state_list
-        )
+        with SandboxdGlobal.sandbox_state_list_lock:
+            sandbox_state_copy: list[SandboxState] = copy.deepcopy(
+                SandboxdGlobal.sandbox_state_list
+            )
         for sandbox_state in sandbox_state_copy:
             message_batch: list[SmdCommServerMsg | SmdCommBidiMsg] = (
                 get_messages_for_sandbox_state(
@@ -581,13 +605,81 @@ class SandboxdCommThread:
 
         self.client_is_long_running = True
 
-    def client_query_need_restart(self, client_msg: SmdCommClientMsg) -> None:
+    def client_query_need_restart_handler(
+        self, client_msg: SmdCommClientMsg
+    ) -> None:
         """
         Handles QUERY_NEED_RESTART messages.
         """
 
         assert isinstance(client_msg, SmdCommClientQueryNeedRestartMsg)
-        ## TODO
+        if SandboxdGlobal.restart_required_file_path.exists():
+            self.comm_session.send_msg(
+                SmdCommServerConfirmNeedRestartMsg(client_msg.correlation_id)
+            )
+            return
+        self.comm_session.send_msg(
+            SmdCommServerDenyNeedRestartMsg(client_msg.correlation_id)
+        )
+
+    def client_restart_handler(
+        self, client_msg: SmdCommClientMsg
+    ) -> None:
+        """
+        Handles RESTART messages.
+        """
+
+        assert isinstance(client_msg, SmdCommClientRestartMsg)
+
+        ## Clients are only permitted to restart the backend if they are the
+        ## only user on the system with an active connection to the server AND
+        ## they are the only user on the system with any sandboxes running.
+        ##
+        ## TODO: We might also want to only allow restarting the server if the
+        ## flag exists stating that the server needs to be restarted. Maybe
+        ## being able to restart the server under other circumstances is useful
+        ## though.
+
+        should_restart: bool = True
+
+        with SandboxdGlobal.sandbox_state_list_lock:
+            with SandboxdGlobal.session_list_lock:
+                for sandbox_state in SandboxdGlobal.sandbox_state_list:
+                    if (
+                        sandbox_state.user_id_numeric
+                        != self.comm_session.user_id_numeric
+                    ):
+                        should_restart = False
+                        break
+
+                if should_restart:
+                    for comm_thread in SandboxdGlobal.comm_thread_list:
+                        if (
+                            comm_thread.comm_session.user_id_numeric
+                            != self.comm_session.user_id_numeric
+                        ):
+                            should_restart = False
+                            break
+
+                if not should_restart:
+                    self.comm_session.send_msg(
+                        SmdCommServerRestartDeniedMsg(
+                            client_msg.correlation_id
+                        )
+                    )
+                    return
+
+                restart_inprogress_msg: SmdCommServerRestartInprogressMsg = (
+                    SmdCommServerRestartInprogressMsg(
+                        client_msg.correlation_id
+                    )
+                )
+                self.comm_session.send_msg(restart_inprogress_msg)
+                self.broadcast_message_maybe(restart_inprogress_msg)
+
+                ## Note that this doesn't immediately terminate, it just
+                ## instructs the main loop to terminate.
+                self.terminate()
 
     ## TODO: add more handlers here
 
@@ -985,7 +1077,7 @@ def validate_sandbox_repo() -> None:
         try:
             SmdCommon.validate_id(
                 sandbox_user_path.name,
-                [SmdValidateType.USER_UID],
+                [SmdValidateType.DECIMAL_INT],
                 "Sandbox user dir name is not a UID",
             )
         except ValueError as e:
@@ -1119,7 +1211,7 @@ def load_sandbox_config() -> None:
             SandboxdGlobal.sandbox_state_list.append(
                 SandboxState(
                     uuid=sandbox_path.name,
-                    user_uid=int(sandbox_user_path.name),
+                    user_id_numeric=int(sandbox_user_path.name),
                     name=config_dict["name"],
                     description=config_dict["description"],
                     root_vol_size=config_dict["root_vol_size"],
@@ -1178,10 +1270,10 @@ def handle_control_register_msg(
     Handles a REGISTER control message from the client.
     """
 
-    orig_user_name: str = control_msg.arg_list[0]
-    user_name: str | None = SmdCommon.normalize_user_id(orig_user_name)
-    if user_name is None:
-        logging.warning("Account '%s' does not exist", orig_user_name)
+    user_id: str = control_msg.arg_list[0]
+    user_id_numeric: int | None = SmdCommon.normalize_user_id(user_id)
+    if user_id_numeric is None:
+        logging.warning("Account '%s' does not exist", user_id)
         send_control_msg_safe(
             control_session,
             SmdControlServerRegisterFailureMsg(control_msg.correlation_id),
@@ -1189,11 +1281,11 @@ def handle_control_register_msg(
         return
 
     for server_sock in SandboxdGlobal.socket_list:
-        if server_sock.user_name == user_name:
+        if server_sock.user_id_numeric == user_id_numeric:
             logging.info(
                 "Handled REGISTER message for account '%s', socket already "
                 + "exists",
-                user_name,
+                user_id,
             )
             send_control_msg_safe(
                 control_session,
@@ -1203,7 +1295,7 @@ def handle_control_register_msg(
 
     try:
         comm_socket: SmdServerSocket = SmdServerSocket(
-            SmdSocketType.COMMUNICATION, user_name
+            SmdSocketType.COMMUNICATION, str(user_id_numeric)
         )
         SandboxdGlobal.add_control_socket_queue.put(comm_socket)
         assert SandboxdGlobal.ctm_write_pipe is not None
@@ -1211,7 +1303,7 @@ def handle_control_register_msg(
             pass
         logging.info(
             "Handled REGISTER message for account '%s', socket created",
-            user_name,
+            user_id,
         )
         send_control_msg_safe(
             control_session,
@@ -1220,7 +1312,7 @@ def handle_control_register_msg(
         return
     except Exception as e:
         logging.error(
-            "Failed to create socket for account '%s'", user_name, exc_info=e
+            "Failed to create socket for account '%s'", user_id, exc_info=e
         )
         send_control_msg_safe(
             control_session,
@@ -1236,19 +1328,29 @@ def handle_control_unregister_msg(
     Handles an UNREGISTER control message from the client.
     """
 
-    ## We don't require the username to pass validation here since we only
-    ## create sockets for users after validation passes. We do still normalize
-    ## the user ID to support passing a UID here.
-
-    orig_user_name: str = control_msg.arg_list[0]
-    user_name: str | None = SmdCommon.normalize_user_id(orig_user_name)
-    if user_name is None:
-        user_name = orig_user_name
+    user_id: str = control_msg.arg_list[0]
+    user_id_numeric: int | None = SmdCommon.normalize_user_id(user_id)
+    if user_id_numeric is None:
+        try:
+            user_id_numeric = int(user_id)
+        except ValueError:
+            logging.warning(
+                "Handled UNREGSITER message for account '%s', could not "
+                + "normalize UID",
+                user_id,
+            )
+            send_control_msg_safe(
+                control_session,
+                SmdControlServerUnregisterFailureMsg(
+                    control_msg.correlation_id
+                ),
+            )
+            return
 
     for server_sock in SandboxdGlobal.socket_list:
-        if server_sock.user_name is None:
+        if server_sock.user_id_numeric is None:
             continue
-        if server_sock.user_name == user_name:
+        if server_sock.user_id_numeric == user_id_numeric:
             try:
                 server_sock.close()
                 SandboxdGlobal.remove_control_socket_queue.put(server_sock)
@@ -1258,7 +1360,7 @@ def handle_control_unregister_msg(
                 logging.info(
                     "Handled UNREGISTER message for account '%s', socket "
                     + "destroyed",
-                    user_name,
+                    user_id,
                 )
                 send_control_msg_safe(
                     control_session,
@@ -1270,7 +1372,7 @@ def handle_control_unregister_msg(
             except Exception as e:
                 logging.error(
                     "Failed to destroy socket for account '%s'",
-                    user_name,
+                    user_id,
                     exc_info=e,
                 )
                 send_control_msg_safe(
@@ -1283,7 +1385,7 @@ def handle_control_unregister_msg(
 
     logging.info(
         "Handled UNREGISTER message for account '%s', socket did not exist",
-        user_name,
+        user_id,
     )
     send_control_msg_safe(
         control_session,
@@ -1349,12 +1451,15 @@ def handle_comm_socket_conn(comm_socket: SmdServerSocket) -> None:
     except Exception as e:
         logging.error(
             "Could not start comm session with client run by account '%s'",
-            comm_socket.user_name,
+            comm_socket.user_id_numeric,
             exc_info=e,
         )
         return
 
-    SandboxdGlobal.comm_thread_list.append(SandboxdCommThread(comm_session))
+    with SandboxdGlobal.session_list_lock:
+        SandboxdGlobal.comm_thread_list.append(
+            SandboxdCommThread(comm_session)
+        )
 
 
 def main_loop() -> NoReturn:

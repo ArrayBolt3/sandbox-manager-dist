@@ -220,7 +220,7 @@ class SmdControlClientRegisterMsg(
         assert arg_list is not None
         SmdCommon.validate_id(
             arg_list[0],
-            [SmdValidateType.USER_NAME, SmdValidateType.USER_UID],
+            [SmdValidateType.USER_NAME, SmdValidateType.DECIMAL_INT],
             "User ID failed validation",
         )
 
@@ -245,7 +245,7 @@ class SmdControlClientUnregisterMsg(
         assert arg_list is not None
         SmdCommon.validate_id(
             arg_list[0],
-            [SmdValidateType.USER_NAME, SmdValidateType.USER_UID],
+            [SmdValidateType.USER_NAME, SmdValidateType.DECIMAL_INT],
             "User ID failed validation",
         )
 
@@ -587,12 +587,12 @@ class SmdCommClientCreateFileBeginMsg(
         )
         SmdCommon.validate_id(
             arg_list[1],
-            [SmdValidateType.USER_NAME, SmdValidateType.USER_UID],
+            [SmdValidateType.USER_NAME, SmdValidateType.DECIMAL_INT],
             "Owning user failed validation",
         )
         SmdCommon.validate_id(
             arg_list[2],
-            [SmdValidateType.USER_NAME, SmdValidateType.USER_UID],
+            [SmdValidateType.USER_NAME, SmdValidateType.DECIMAL_INT],
             "Owning group failed validation",
         )
         SmdCommon.validate_id(
@@ -654,12 +654,12 @@ class SmdCommClientCreateDirMsg(
         )
         SmdCommon.validate_id(
             arg_list[1],
-            [SmdValidateType.USER_NAME, SmdValidateType.USER_UID],
+            [SmdValidateType.USER_NAME, SmdValidateType.DECIMAL_INT],
             "Owning user failed validation",
         )
         SmdCommon.validate_id(
             arg_list[2],
-            [SmdValidateType.USER_NAME, SmdValidateType.USER_UID],
+            [SmdValidateType.USER_NAME, SmdValidateType.DECIMAL_INT],
             "Owning group failed validation",
         )
         SmdCommon.validate_id(
@@ -1541,12 +1541,12 @@ class SmdCommServerListDirEntry(
         )
         SmdCommon.validate_id(
             arg_list[1],
-            [SmdValidateType.USER_NAME, SmdValidateType.USER_UID],
+            [SmdValidateType.USER_NAME, SmdValidateType.DECIMAL_INT],
             "Owning user failed validation",
         )
         SmdCommon.validate_id(
             arg_list[2],
-            [SmdValidateType.USER_NAME, SmdValidateType.USER_UID],
+            [SmdValidateType.USER_NAME, SmdValidateType.DECIMAL_INT],
             "Owning group failed validation",
         )
         SmdCommon.validate_id(
@@ -1608,12 +1608,12 @@ class SmdCommServerReadFileStartMsg(
         assert arg_list is not None
         SmdCommon.validate_id(
             arg_list[0],
-            [SmdValidateType.USER_NAME, SmdValidateType.USER_UID],
+            [SmdValidateType.USER_NAME, SmdValidateType.DECIMAL_INT],
             "Owning user failed validation",
         )
         SmdCommon.validate_id(
             arg_list[1],
-            [SmdValidateType.USER_NAME, SmdValidateType.USER_UID],
+            [SmdValidateType.USER_NAME, SmdValidateType.DECIMAL_INT],
             "Owning group failed validation",
         )
         SmdCommon.validate_id(
@@ -2369,38 +2369,38 @@ class SmdSession:
         self,
         server_socket_fileno: int = -1,
         session_socket: socket.socket | None = None,
-        user_name: str | None = None,
+        user_id: str | None = None,
         is_control_session: bool = False,
     ) -> None:
         ## Possible socket/user name/control session bool argument
         ## combinations:
-        ## - session_socket set, user_name set, is_control_session = True:
-        ##   - Illegal, user_name cannot be set when is_control_session is
+        ## - session_socket set, user_id set, is_control_session = True:
+        ##   - Illegal, user_id cannot be set when is_control_session is
         ##     True.
-        ## - session_socket set, user_name set, is_control_session = False:
+        ## - session_socket set, user_id set, is_control_session = False:
         ##   - Legal, server-side comm session, socket passed by
         ##     SmdServerSocket.get_session.
-        ## - session_socket set, user_name not set, is_control_session = True:
+        ## - session_socket set, user_id not set, is_control_session = True:
         ##   - Legal, server-side control session, socket passed by
         ##     SmdServerSocket.get_session.
-        ## - session_socket set, user_name not set, is_control_session = False:
-        ##   - Illegal, user_name must be set when is_control_session is False.
-        ## - session_socket not set, user_name set, is_control_session = True:
-        ##   - Illegal, user_name cannot be set when is_control_session is True.
-        ## - session_socket not set, user_name set, is_control_session = False:
+        ## - session_socket set, user_id not set, is_control_session = False:
+        ##   - Illegal, user_id must be set when is_control_session is False.
+        ## - session_socket not set, user_id set, is_control_session = True:
+        ##   - Illegal, user_id cannot be set when is_control_session is True.
+        ## - session_socket not set, user_id set, is_control_session = False:
         ##   - Legal, client-side comm session, socket created here.
-        ## - session_socket not set, user_name not set, is_control_session
+        ## - session_socket not set, user_id not set, is_control_session
         ##   = True:
         ##   - Legal, client-side control session, socket created here.
-        ## - session_socket not set, user_name not set, is_control_session
+        ## - session_socket not set, user_id not set, is_control_session
         ##   = False:
-        ##   - Illegal, user_name must be set when is_control_session is False.
+        ##   - Illegal, user_id must be set when is_control_session is False.
         ##
         ## server_socket_fileno must be set if session_socket is passed,
         ## otherwise it must be omitted.
 
         self.server_socket_fileno: int = server_socket_fileno
-        self.user_name: str | None
+        self.user_id_numeric: int | None = None
         self.backend_socket: socket.socket
         self.is_control_session: bool = is_control_session
         self.is_server_side: bool = False
@@ -2417,13 +2417,13 @@ class SmdSession:
                 + "passed"
             )
 
-        if not is_control_session and user_name is None:
+        if not is_control_session and user_id is None:
             raise ValueError(
-                "user_name must be passed if creating a comm session"
+                "user_id must be passed if creating a comm session"
             )
-        if is_control_session and user_name is not None:
+        if is_control_session and user_id is not None:
             raise ValueError(
-                "user_name must not be passed when creating a control session"
+                "user_id must not be passed when creating a control session"
             )
 
         if session_socket is None:
@@ -2432,14 +2432,15 @@ class SmdSession:
             if is_control_session:
                 socket_path: Path = SmdCommon.control_path
             else:
-                assert user_name is not None
-                orig_user_name: str = user_name
-                user_name = SmdCommon.normalize_user_id(user_name)
-                if user_name is None:
+                assert user_id is not None
+                user_id_numeric: int | None = SmdCommon.normalize_user_id(
+                    user_id
+                )
+                if user_id_numeric is None:
                     raise ValueError(
-                        f"Account '{orig_user_name}' does not exist"
+                        f"Account '{user_id}' does not exist"
                     )
-                socket_path = Path(SmdCommon.comm_dir, user_name)
+                socket_path = Path(SmdCommon.comm_dir, str(user_id_numeric))
                 if not os.access(socket_path, os.R_OK | os.W_OK):
                     raise PermissionError(
                         f"Cannot access '{str(socket_path)}' for reading and "
@@ -2451,7 +2452,8 @@ class SmdSession:
             self.is_server_side = True
             self.backend_socket = session_socket
 
-        self.user_name = user_name
+        if user_id is not None:
+            self.user_id_numeric = int(user_id)
 
         ## We intentionally set a socket timeout even though the ocnnection
         ## between the client and server is expected to be long-lived. poll()
@@ -2713,18 +2715,18 @@ class SmdServerSocket:
     """
 
     def __init__(
-        self, socket_type: SmdSocketType, user_name: str | None = None
+        self, socket_type: SmdSocketType, user_id: str | None = None
     ) -> None:
         self.backend_socket: socket.socket
         self.socket_type: SmdSocketType
         self.socket_path: Path
         self.is_socket_connected: bool = True
-        self.user_name: str | None = None
+        self.user_id_numeric: int | None = None
 
         if socket_type == SmdSocketType.CONTROL:
-            if user_name is not None:
+            if user_id is not None:
                 raise ValueError(
-                    "user_name is only valid with "
+                    "user_id is only valid with "
                     "SmdSocketType.COMMUNICATION"
                 )
             self.backend_socket = socket.socket(family=socket.AF_UNIX)
@@ -2734,31 +2736,31 @@ class SmdServerSocket:
             os.chmod(SmdCommon.control_path, stat.S_IRUSR | stat.S_IWUSR)
             self.backend_socket.listen(10)
         else:
-            if user_name is None:
+            if user_id is None:
                 raise ValueError(
                     "user_name must be provided when using "
                     "SmdSocketType.COMMUNICATION"
                 )
 
-            orig_user_name: str = user_name
-            user_name = SmdCommon.normalize_user_id(user_name)
-            if user_name is None:
-                raise ValueError(f"Account '{orig_user_name}' does not exist")
+            user_id_numeric: int | None = SmdCommon.normalize_user_id(
+                user_id
+            )
+            if user_id_numeric is None:
+                raise ValueError(f"Account '{user_id}' does not exist")
 
             try:
-                user_info: pwd.struct_passwd = pwd.getpwnam(user_name)
-                target_uid: int = user_info.pw_uid
-                target_gid: int = user_info.pw_gid
+                user_info: pwd.struct_passwd = pwd.getpwuid(user_id_numeric)
+                group_id_numeric: int = user_info.pw_gid
             except Exception as e:
-                raise ValueError(f"Account '{user_name}' does not exist") from e
+                raise ValueError(f"Account '{user_id}' does not exist") from e
 
             self.backend_socket = socket.socket(family=socket.AF_UNIX)
-            self.socket_path = Path(SmdCommon.comm_dir, user_name)
+            self.socket_path = Path(SmdCommon.comm_dir, str(user_id_numeric))
             self.backend_socket.bind(str(self.socket_path))
-            os.chown(self.socket_path, target_uid, target_gid)
+            os.chown(self.socket_path, user_id_numeric, group_id_numeric)
             os.chmod(self.socket_path, stat.S_IRUSR | stat.S_IWUSR)
             self.backend_socket.listen(10)
-            self.user_name = user_name
+            self.user_id_numeric = user_id_numeric
 
         self.socket_type = socket_type
 
@@ -2778,11 +2780,11 @@ class SmdServerSocket:
                 is_control_session=True,
             )
 
-        assert self.user_name is not None
+        assert self.user_id_numeric is not None
         return SmdSession(
             server_socket_fileno=self.fileno(),
             session_socket=session_socket,
-            user_name=self.user_name,
+            user_id=str(self.user_id_numeric),
             is_control_session=False,
         )
 

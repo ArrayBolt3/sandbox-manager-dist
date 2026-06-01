@@ -22,21 +22,20 @@ class SmdValidateType(Enum):
     """
 
     USER_NAME = 1
-    USER_UID = 2
-    UUID = 3
-    SANDBOX_NAME = 4
-    BOOT_MODE = 5
-    SHUTDOWN_MODE = 6
-    FILE_PERM = 7
-    ABSOLUTE_PATH = 8
-    # RELATIVE_PATH = 9
-    DESKTOP_FILE = 10
-    FILE_TYPE = 11
-    FILE_NAME = 12
-    DECIMAL_INT = 13
-    YN_BOOL = 14
-    WRITE_STATUS = 15
-    DEVICE_PATH = 16
+    UUID = 2
+    SANDBOX_NAME = 3
+    BOOT_MODE = 4
+    SHUTDOWN_MODE = 5
+    FILE_PERM = 6
+    ABSOLUTE_PATH = 7
+    # RELATIVE_PATH = 8
+    DESKTOP_FILE = 9
+    FILE_TYPE = 10
+    FILE_NAME = 11
+    DECIMAL_INT = 12
+    YN_BOOL = 13
+    WRITE_STATUS = 14
+    DEVICE_PATH = 15
 
 
 class SmdSocketType(Enum):
@@ -80,7 +79,6 @@ class SmdCommon:
     comm_dir: Path = Path(state_dir, "comm")
 
     user_name_regex: re.Pattern[str] = re.compile(r"[a-z_][-a-z0-9_]*\$?\Z")
-    uid_regex: re.Pattern[str] = re.compile(r"[0-9]+\Z")
     uuid_regex: re.Pattern[str] = re.compile(
         r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\Z"
     )
@@ -126,8 +124,6 @@ class SmdCommon:
             match validate_type:
                 case SmdValidateType.USER_NAME:
                     target_regex = SmdCommon.user_name_regex
-                case SmdValidateType.USER_UID:
-                    target_regex = SmdCommon.uid_regex
                 case SmdValidateType.UUID:
                     target_regex = SmdCommon.uuid_regex
                 case SmdValidateType.SANDBOX_NAME:
@@ -170,26 +166,27 @@ class SmdCommon:
             raise ValueError(err_str)
 
     @staticmethod
-    def normalize_user_id(user_name: str) -> str | None:
+    def normalize_user_id(user_id: str) -> int | None:
         """
         Ensures the user with the specified name or UID exists on the system.
-        Returns None if the user doesn't exist, or the username if the user
-        does exist.
+        Returns None if the user doesn't exist, or the UID if the user exists.
         """
 
         try:
-            SmdCommon.validate_id(user_name, [SmdValidateType.USER_NAME], "")
-            user_list: list[str] = [pw.pw_name for pw in pwd.getpwall()]
-            if user_name in user_list:
-                return user_name
+            SmdCommon.validate_id(user_id, [SmdValidateType.USER_NAME], "")
+            user_info_list: list[pwd.struct_passwd] = pwd.getpwall()
+            for user_info in user_info_list:
+                if user_info.pw_name == user_id:
+                    return user_info.pw_uid
         except ValueError:
             pass
 
         try:
-            SmdCommon.validate_id(user_name, [SmdValidateType.DECIMAL_INT], "")
-            uid_list: list[str] = [str(pw.pw_uid) for pw in pwd.getpwall()]
-            if user_name in uid_list:
-                return pwd.getpwuid(int(user_name)).pw_name
+            SmdCommon.validate_id(user_id, [SmdValidateType.DECIMAL_INT], "")
+            user_id_numeric: int = int(user_id)
+            uid_list: list[int] = [pw.pw_uid for pw in pwd.getpwall()]
+            if user_id_numeric in uid_list:
+                return user_id_numeric
         except ValueError:
             pass
 
