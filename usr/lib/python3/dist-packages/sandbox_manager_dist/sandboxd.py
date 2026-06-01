@@ -13,10 +13,12 @@ creation, deletion, management, and some forms of IPC.
 ## TODO: Remove this in Debian Forky, Python 3.14+ will no longer require it
 from __future__ import annotations
 
+import copy
 import logging
 import multiprocessing as mp
 import os
 import queue
+import secrets
 import select
 import shutil
 import sys
@@ -51,7 +53,14 @@ class SandboxdGlobal:
     pid_file_path: Path = Path(SmdCommon.state_dir, "pid")
     old_umask: int = 0
 
-    sandbox_config_list: list[SandboxState] = []
+    sandbox_state_list: list[SandboxState] = []
+    ## Backup sandbox config only exists when a sandbox is reconfigured via
+    ## a CONFIG_START ... CONFIG_END message block from the client. This is
+    ## because this is the only situation where a sandbox has two config states
+    ## simultaneously, and the old one may have to be rolled back to in the
+    ## event of a failure.
+    backup_sandbox_state_list: list[SandboxState] = []
+    damaged_sandbox_list: list[DamagedSandboxInfo] = []
     socket_list: list[SmdServerSocket] = []
     comm_thread_list: list[SandboxdCommThread] = []
     session_list_lock: Lock = Lock()
@@ -91,7 +100,7 @@ class SandboxdGlobal:
                 int,
                 lambda cpu_weight: 1 <= cpu_weight <= SmdCommon.max_cpu_weight,
             ),
-            #"cpu_cores": int,
+            # "cpu_cores": int,
             "io_weight": schema.And(
                 int,
                 lambda io_weight: 1 <= io_weight <= SmdCommon.max_io_weight,
@@ -128,7 +137,7 @@ class SandboxdGlobal:
 @dataclass
 class SharedFsoState:
     """
-    Configuration info for a shared folder or file.
+    Configuration and state info for a shared folder or file.
     """
 
     read_write: bool
@@ -140,7 +149,7 @@ class SharedFsoState:
 @dataclass
 class SandboxState:
     """
-    Configuration info for a sandbox.
+    Configuration and state info for a sandbox.
     """
 
     uuid: str
@@ -151,7 +160,7 @@ class SandboxState:
     data_vol_size: int
     memory: int
     cpu_weight: int
-    #cpu_cores: int
+    # cpu_cores: int
     io_weight: int
     audio_enabled: bool
     wayland_enabled: bool
@@ -161,6 +170,17 @@ class SandboxState:
     nested_sandboxing_enabled: bool
     shared_fso_list: list[SharedFsoState]
     shared_device_list: list[str]
+    sandbox_status: SmdSandboxStatus = SmdSandboxStatus.SHUT_DOWN
+
+
+@dataclass
+class DamagedSandboxInfo:
+    """
+    Information about damaged sandboxes.
+    """
+
+    user_uid: int
+    path: str
 
 
 class HandlerProc:
@@ -416,9 +436,7 @@ class SandboxdCommThread:
                         source_handler = candidate_handler
                         break
                 if source_handler is None:
-                    logging.critical(
-                        "sandboxd lost track of a handler process!"
-                    )
+                    logging.critical("sandboxd lost track of a handler process")
                     sys.exit(1)
                 try:
                     recv_obj: Any = source_handler.ctp_pipe.recv()
@@ -521,6 +539,21 @@ class SandboxdCommThread:
                     while comm_thread.notify_write_pipe.write(b"\x00") == 0:
                         pass
 
+    def terminate(self) -> None:
+        """
+        Tells the thread to shut down. Note that any thread can call this.
+        """
+
+        try:
+            while self.terminate_write_pipe.write(b"\x00") == 0:
+                pass
+        except Exception:
+            pass
+
+    ## The remaining functions in this class are message handlers. These are
+    ## all called by self.handle_incoming_message(), which looks up the
+    ## handlers to execute from self.message_handler_map.
+
     def client_sync_handler(self, client_msg: SmdCommClientMsg) -> None:
         """
         Handles SYNC messages.
@@ -534,6 +567,20 @@ class SandboxdCommThread:
 
         assert isinstance(client_msg, SmdCommClientSyncMsg)
 
+        sandbox_state_copy: list[SandboxState] = copy.deepcopy(
+            SandboxdGlobal.sandbox_state_list
+        )
+        for sandbox_state in sandbox_state_copy:
+            message_batch: list[SmdCommServerMsg | SmdCommBidiMsg] = (
+                get_messages_for_sandbox_state(
+                    sandbox_state, after_failed_config=False
+                )
+            )
+            for message in message_batch:
+                self.comm_session.send_msg(message)
+
+        self.client_is_long_running = True
+
     def client_query_need_restart(self, client_msg: SmdCommClientMsg) -> None:
         """
         Handles QUERY_NEED_RESTART messages.
@@ -544,16 +591,194 @@ class SandboxdCommThread:
 
     ## TODO: add more handlers here
 
-    def terminate(self) -> None:
-        """
-        Tells the thread to shut down. Note that any thread can call this.
-        """
 
-        try:
-            while self.terminate_write_pipe.write(b"\x00") == 0:
-                pass
-        except Exception:
+def bool_to_yn(in_val: bool) -> str:
+    """
+    Outputs 'y' for true, 'n' for false.
+    """
+
+    if in_val:
+        return "y"
+    return "n"
+
+
+def get_messages_for_sandbox_state(
+    sandbox_state: SandboxState, after_failed_config: bool
+) -> list[SmdCommServerMsg | SmdCommBidiMsg]:
+    """
+    Generates a sequence of messages to tell a client about the current config
+    state of a sandbox.
+    """
+
+    output_list: list[SmdCommServerMsg | SmdCommBidiMsg] = []
+    main_correlation_id: int = secrets.randbelow(SmdCommon.correlation_id_bound)
+
+    if (
+        sandbox_state.sandbox_status != SmdSandboxStatus.SHUT_DOWN
+        and after_failed_config
+    ):
+        raise ValueError(
+            "after_failed_config is set to True, expected "
+            + "sandbox_state.sandbox_status would be "
+            + "'SmdSandboxStatus.SHUT_DOWN', actual status was "
+            + f"'{sandbox_state.sandbox_status}'"
+        )
+
+    ## Leading messages; these have to be sent before config info since that's
+    ## how these messages would be sent in other situations.
+    match sandbox_state.sandbox_status:
+        case SmdSandboxStatus.CONFIG:
+            output_list.append(
+                SmdCommServerConfigInprogressMsg(
+                    main_correlation_id, [sandbox_state.uuid]
+                )
+            )
+        case SmdSandboxStatus.CREATE:
+            output_list.append(
+                SmdCommServerCreateInprogressMsg(
+                    main_correlation_id, [sandbox_state.uuid]
+                )
+            )
+        case SmdSandboxStatus.CLONE:
+            output_list.append(
+                SmdCommServerCloneInprogressMsg(
+                    main_correlation_id, [sandbox_state.uuid]
+                )
+            )
+        case _:
             pass
+
+    if after_failed_config:
+        output_list.append(SmdCommServerConfigFailedMsg(main_correlation_id))
+
+    output_list.append(
+        SmdCommBidiNameMsg(main_correlation_id, [sandbox_state.name])
+    )
+    output_list.append(
+        SmdCommBidiDescriptionMsg(
+            main_correlation_id, [sandbox_state.description]
+        )
+    )
+    output_list.append(
+        SmdCommBidiRootVolSizeMsg(
+            main_correlation_id, [str(sandbox_state.root_vol_size)]
+        )
+    )
+    output_list.append(
+        SmdCommBidiDataVolSizeMsg(
+            main_correlation_id, [str(sandbox_state.data_vol_size)]
+        )
+    )
+    output_list.append(
+        SmdCommBidiMemoryMsg(main_correlation_id, [str(sandbox_state.memory)])
+    )
+    output_list.append(
+        SmdCommBidiCpuWeightMsg(
+            main_correlation_id, [str(sandbox_state.cpu_weight)]
+        )
+    )
+    # output_list.append(
+    #     SmdCommBidiCpuCoresMsg(main_correlation_id, [str(sandbox_state.cpu_cores)])
+    # )
+    output_list.append(
+        SmdCommBidiIoWeightMsg(
+            main_correlation_id, [str(sandbox_state.io_weight)]
+        )
+    )
+    output_list.append(
+        SmdCommBidiAudioEnabledMsg(
+            main_correlation_id, [bool_to_yn(sandbox_state.audio_enabled)]
+        )
+    )
+    output_list.append(
+        SmdCommBidiWaylandEnabledMsg(
+            main_correlation_id, [bool_to_yn(sandbox_state.wayland_enabled)]
+        )
+    )
+    output_list.append(
+        SmdCommBidiX11EnabledMsg(
+            main_correlation_id, [bool_to_yn(sandbox_state.x11_enabled)]
+        )
+    )
+    output_list.append(
+        SmdCommBidi3dEnabledMsg(
+            main_correlation_id, [bool_to_yn(sandbox_state.three_d_enabled)]
+        )
+    )
+    output_list.append(
+        SmdCommBidiNetworkEnabledMsg(
+            main_correlation_id, [bool_to_yn(sandbox_state.network_enabled)]
+        )
+    )
+    output_list.append(
+        SmdCommBidiNestedSandboxingEnabledMsg(
+            main_correlation_id,
+            [bool_to_yn(sandbox_state.nested_sandboxing_enabled)],
+        )
+    )
+    for fso_state in sandbox_state.shared_fso_list:
+        output_list.append(
+            SmdCommBidiSharedFsoMsg(
+                main_correlation_id,
+                [
+                    "RW" if fso_state.read_write else "RO",
+                    fso_state.host_path,
+                    fso_state.sandbox_path,
+                ],
+            )
+        )
+    for shared_device in sandbox_state.shared_device_list:
+        output_list.append(
+            SmdCommBidiSharedDeviceMsg(main_correlation_id, [shared_device])
+        )
+
+    ## Trailing messages; these are sent after config info for the same reason
+    ## leading messages are sent before. SmdSandboxStatus.SHUT_DOWN is not
+    ## handled by either the leading or trailing blocks because it doesn't need
+    ## any extra messages accompanying it.
+    new_correlation_id: int = secrets.randbelow(SmdCommon.correlation_id_bound)
+    match sandbox_state.sandbox_status:
+        case SmdSandboxStatus.BOOTING_UPDATE:
+            output_list.append(
+                SmdCommServerBootInprogressMsg(
+                    new_correlation_id,
+                    [sandbox_state.uuid, "update"],
+                )
+            )
+        case SmdSandboxStatus.BOOTING_WORK:
+            output_list.append(
+                SmdCommServerBootInprogressMsg(
+                    new_correlation_id, [sandbox_state.uuid, "work"]
+                )
+            )
+        case SmdSandboxStatus.BOOTED_UPDATE:
+            output_list.append(
+                SmdCommServerBootSuccessMsg(
+                    new_correlation_id, [sandbox_state.uuid, "update"]
+                )
+            )
+        case SmdSandboxStatus.BOOTED_WORK:
+            output_list.append(
+                SmdCommServerBootSuccessMsg(
+                    new_correlation_id, [sandbox_state.uuid, "work"]
+                )
+            )
+        case SmdSandboxStatus.SHUTTING_DOWN:
+            output_list.append(
+                SmdCommServerShutdownInprogressMsg(
+                    new_correlation_id, [sandbox_state.uuid]
+                )
+            )
+        case SmdSandboxStatus.DELETE:
+            output_list.append(
+                SmdCommServerDeleteInprogressMsg(
+                    new_correlation_id, [sandbox_state.uuid]
+                )
+            )
+        case _:
+            pass
+
+    return output_list
 
 
 def ensure_running_as_root() -> None:
@@ -562,7 +787,7 @@ def ensure_running_as_root() -> None:
     """
 
     if os.geteuid() != 0:
-        logging.critical("sandboxd must run as root!")
+        logging.critical("sandboxd must run as root")
         sys.exit(1)
 
 
@@ -590,7 +815,7 @@ def verify_not_running_twice() -> None:
             os.kill(old_pid, 0)
             # If no exception, the old sandboxd process is still running.
             logging.critical(
-                "Cannot run two sandboxd processes at the same time!"
+                "Cannot run two sandboxd processes at the same time"
             )
             sys.exit(1)
         except OSError:
@@ -598,7 +823,7 @@ def verify_not_running_twice() -> None:
         except Exception as e:
             logging.critical(
                 "Could not check for simultaneously running sandboxd "
-                "processes!",
+                + "processes",
                 exc_info=e,
             )
             sys.exit(1)
@@ -615,7 +840,7 @@ def cleanup_old_state_dir() -> None:
     if not shutil.rmtree.avoids_symlink_attacks:
         logging.critical(
             "This platform does not allow recursive deletion of a directory "
-            "without a symlink attack vuln!"
+            "without a symlink attack vuln"
         )
         sys.exit(1)
     # Cleanup any sockets left behind by an old sandboxd process
@@ -624,7 +849,7 @@ def cleanup_old_state_dir() -> None:
             shutil.rmtree(SmdCommon.state_dir)
         except Exception as e:
             logging.critical(
-                "Could not delete '%s'!",
+                "Could not delete '%s'",
                 str(SmdCommon.state_dir),
                 exc_info=e,
             )
@@ -642,14 +867,14 @@ def populate_state_dir() -> None:
             SmdCommon.state_dir.chmod(0o755)
         except Exception as e:
             logging.critical(
-                "Cannot create '%s'!",
+                "Cannot create '%s'",
                 str(SmdCommon.state_dir),
                 exc_info=e,
             )
             sys.exit(1)
     else:
         logging.critical(
-            "Directory '%s' should not exist yet, but does!",
+            "Directory '%s' should not exist yet, but does",
             str(SmdCommon.state_dir),
         )
         sys.exit(1)
@@ -660,14 +885,14 @@ def populate_state_dir() -> None:
             SmdCommon.comm_dir.chmod(0o755)
         except Exception as e:
             logging.critical(
-                "Cannot create '%s'!",
+                "Cannot create '%s'",
                 str(SmdCommon.comm_dir),
                 exc_info=e,
             )
             sys.exit(1)
     else:
         logging.critical(
-            "Directory '%s' should not exist yet, but does!",
+            "Directory '%s' should not exist yet, but does",
             str(SmdCommon.comm_dir),
         )
         sys.exit(1)
@@ -680,7 +905,7 @@ def populate_state_dir() -> None:
         SandboxdGlobal.pid_file_path.chmod(0o644)
     except Exception as e:
         logging.critical(
-            "Cannot create PID file at '%s'!",
+            "Cannot create PID file at '%s'",
             str(SandboxdGlobal.pid_file_path),
             exc_info=e,
         )
@@ -697,7 +922,7 @@ def open_control_socket() -> None:
     try:
         control_socket: SmdServerSocket = SmdServerSocket(SmdSocketType.CONTROL)
     except Exception as e:
-        logging.critical("Failed to open control socket!", exc_info=e)
+        logging.critical("Failed to open control socket", exc_info=e)
         sys.exit(1)
 
     SandboxdGlobal.socket_list.append(control_socket)
@@ -714,28 +939,28 @@ def prepare_sandbox_dir() -> None:
             SmdCommon.sandbox_dir.mkdir(parents=True)
         except Exception as e:
             logging.critical(
-                "Sandbox dir '%s' does not exist and cannot be created!",
+                "Sandbox dir '%s' does not exist and cannot be created",
                 SmdCommon.sandbox_dir,
-                exc_info=e
+                exc_info=e,
             )
             sys.exit(1)
     elif not SmdCommon.sandbox_dir.is_dir():
         logging.critical(
-            "Sandbox dir '%s' exists but is not a directory!",
+            "Sandbox dir '%s' exists but is not a directory",
             SmdCommon.sandbox_dir,
         )
 
     stat_info: os.stat_result = os.stat(SmdCommon.sandbox_dir)
     if stat_info.st_uid != 0:
         logging.critical(
-            "Sandbox dir '%s' exists but is owned by UID %s instead of UID 0!",
+            "Sandbox dir '%s' exists but is owned by UID %s instead of UID 0",
             SmdCommon.sandbox_dir,
             stat_info.st_uid,
         )
         sys.exit(1)
     if stat_info.st_gid != 0:
         logging.critical(
-            "Sandbox dir '%s' exists but is owned by GID %s instead of GID 0!",
+            "Sandbox dir '%s' exists but is owned by GID %s instead of GID 0",
             SmdCommon.sandbox_dir,
             stat_info.st_uid,
         )
@@ -744,9 +969,9 @@ def prepare_sandbox_dir() -> None:
     if dir_mode != 0o700:
         logging.critical(
             "Sandbox dir '%s' exists but has permissions %s rather than "
-            + "permissions 0o755!",
+            + "permissions 0o755",
             SmdCommon.sandbox_dir,
-            dir_mode
+            dir_mode,
         )
         sys.exit(1)
 
@@ -755,11 +980,6 @@ def validate_sandbox_repo() -> None:
     """
     Validates that all sandboxes directories have expected contents.
     """
-
-    ## FIXME: This is a little too strict; if sandboxd or the system it runs
-    ## on crashes in the middle of creating or deleting a sandbox, it may
-    ## leave the sandbox repo dir in an inconsistent state, which will result
-    ## in sandbox-manager-dist becoming bricked if we validate this strictly.
 
     for sandbox_user_path in SmdCommon.sandbox_dir.iterdir():
         try:
@@ -770,7 +990,7 @@ def validate_sandbox_repo() -> None:
             )
         except ValueError as e:
             logging.critical(
-                "Invalid sandbox user dir '%s'!",
+                "Invalid sandbox user dir '%s'",
                 sandbox_user_path,
                 exc_info=e,
             )
@@ -779,12 +999,20 @@ def validate_sandbox_repo() -> None:
         if not sandbox_user_path.is_dir():
             logging.critical(
                 "'%s' is not a directory, but should be a sandbox user "
-                + "directory!",
+                + "directory",
                 sandbox_user_path,
             )
             sys.exit(1)
 
         for sandbox_path in sandbox_user_path.iterdir():
+            if not sandbox_path.is_dir():
+                logging.critical(
+                    "'%s' is not a directory, but should be a sandbox "
+                    + "directory",
+                    sandbox_path,
+                )
+                sys.exit(1)
+
             try:
                 SmdCommon.validate_id(
                     sandbox_path.name,
@@ -792,19 +1020,18 @@ def validate_sandbox_repo() -> None:
                     "Sandbox name is not a UUID",
                 )
             except ValueError as e:
-                logging.critical(
-                    "Invalid sandbox dir '%s'!",
+                logging.warning(
+                    "Invalid sandbox dir '%s'",
                     sandbox_path,
                     exc_info=e,
                 )
-
-            if not sandbox_path.is_dir():
-                logging.critical(
-                    "'%s' is not a directory, but should be a sandbox "
-                    + "directory!",
-                    sandbox_path,
+                SandboxdGlobal.damaged_sandbox_list.append(
+                    DamagedSandboxInfo(
+                        int(sandbox_user_path.name),
+                        str(sandbox_path),
+                    )
                 )
-                sys.exit(1)
+                continue
 
             for file_type, file_path in [
                 ("root", Path(sandbox_path, SmdCommon.sandbox_root_file)),
@@ -812,13 +1039,18 @@ def validate_sandbox_repo() -> None:
                 ("config", Path(sandbox_path, SmdCommon.sandbox_config_file)),
             ]:
                 if not file_path.is_file():
-                    logging.critical(
-                        "Sandbox %s file '%s' does not exist or is not a "
-                        + "file!",
+                    logging.warning(
+                        "Sandbox %s file '%s' does not exist or is not a file",
                         file_type,
                         file_path,
                     )
-                    sys.exit(1)
+                    SandboxdGlobal.damaged_sandbox_list.append(
+                        DamagedSandboxInfo(
+                            int(sandbox_user_path.name),
+                            str(sandbox_path),
+                        )
+                    )
+                    continue
 
 
 def load_sandbox_config() -> None:
@@ -839,10 +1071,16 @@ def load_sandbox_config() -> None:
                     )
                 )
             except Exception as e:
-                logging.critical(
-                    "Could not load config file '%s'!", config_path, exc_info=e
+                logging.warning(
+                    "Could not load config file '%s'", config_path, exc_info=e
                 )
-                sys.exit(1)
+                SandboxdGlobal.damaged_sandbox_list.append(
+                    DamagedSandboxInfo(
+                        int(sandbox_user_path.name),
+                        str(sandbox_path),
+                    )
+                )
+                continue
 
             ## All the asserts here are just to make mypy happy.
             assert isinstance(config_dict["name"], str)
@@ -851,7 +1089,7 @@ def load_sandbox_config() -> None:
             assert isinstance(config_dict["data_vol_size"], int)
             assert isinstance(config_dict["memory"], int)
             assert isinstance(config_dict["cpu_weight"], int)
-            #assert isinstance(config_dict["cpu_cores"], int)
+            # assert isinstance(config_dict["cpu_cores"], int)
             assert isinstance(config_dict["io_weight"], int)
             assert isinstance(config_dict["audio_enabled"], bool)
             assert isinstance(config_dict["wayland_enabled"], bool)
@@ -878,7 +1116,7 @@ def load_sandbox_config() -> None:
                     )
                 )
 
-            SandboxdGlobal.sandbox_config_list.append(
+            SandboxdGlobal.sandbox_state_list.append(
                 SandboxState(
                     uuid=sandbox_path.name,
                     user_uid=int(sandbox_user_path.name),
@@ -888,7 +1126,7 @@ def load_sandbox_config() -> None:
                     data_vol_size=config_dict["data_vol_size"],
                     memory=config_dict["memory"],
                     cpu_weight=config_dict["cpu_weight"],
-                    #cpu_cores=config_dict["cpu_cores"],
+                    # cpu_cores=config_dict["cpu_cores"],
                     io_weight=config_dict["io_weight"],
                     audio_enabled=config_dict["audio_enabled"],
                     wayland_enabled=config_dict["wayland_enabled"],
@@ -982,7 +1220,7 @@ def handle_control_register_msg(
         return
     except Exception as e:
         logging.error(
-            "Failed to create socket for account '%s'!", user_name, exc_info=e
+            "Failed to create socket for account '%s'", user_name, exc_info=e
         )
         send_control_msg_safe(
             control_session,
@@ -1031,7 +1269,7 @@ def handle_control_unregister_msg(
                 return
             except Exception as e:
                 logging.error(
-                    "Failed to destroy socket for account '%s'!",
+                    "Failed to destroy socket for account '%s'",
                     user_name,
                     exc_info=e,
                 )
@@ -1068,7 +1306,7 @@ def control_handler_loop() -> NoReturn:
             control_msg: SmdBaseMsg = control_session.get_msg()
         except Exception as e:
             logging.error(
-                "Could not get message from control client!", exc_info=e
+                "Could not get message from control client", exc_info=e
             )
             return
 
@@ -1078,7 +1316,7 @@ def control_handler_loop() -> NoReturn:
             handle_control_unregister_msg(control_session, control_msg)
         else:
             logging.critical(
-                "sandboxd mis-parsed a control command from the client!"
+                "sandboxd mis-parsed a control command from the client"
             )
             sys.exit(1)
     finally:
@@ -1095,9 +1333,7 @@ def handle_control_socket_conn(control_socket: SmdServerSocket) -> None:
     try:
         control_session: SmdSession = control_socket.get_session()
     except Exception as e:
-        logging.error(
-            "Could not start control session with client!", exc_info=e
-        )
+        logging.error("Could not start control session with client", exc_info=e)
         return
 
     SandboxdGlobal.control_session_queue.put(control_session)
@@ -1112,7 +1348,7 @@ def handle_comm_socket_conn(comm_socket: SmdServerSocket) -> None:
         comm_session: SmdSession = comm_socket.get_session()
     except Exception as e:
         logging.error(
-            "Could not start comm session with client run by account '%s'!",
+            "Could not start comm session with client run by account '%s'",
             comm_socket.user_name,
             exc_info=e,
         )
@@ -1207,7 +1443,7 @@ def main_loop() -> NoReturn:
                     ready_sock_obj = sock_obj
                     break
             if ready_sock_obj is None:
-                logging.critical("sandboxd lost track of a socket!")
+                logging.critical("sandboxd lost track of a socket")
                 sys.exit(1)
             if ready_sock_obj.socket_type == SmdSocketType.CONTROL:
                 handle_control_socket_conn(ready_sock_obj)

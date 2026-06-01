@@ -36,7 +36,7 @@ class SmdValidateType(Enum):
     DECIMAL_INT = 13
     YN_BOOL = 14
     WRITE_STATUS = 15
-    DEVICE_PATH=16
+    DEVICE_PATH = 16
 
 
 class SmdSocketType(Enum):
@@ -46,6 +46,24 @@ class SmdSocketType(Enum):
 
     CONTROL = 1
     COMMUNICATION = 2
+
+
+class SmdSandboxStatus(Enum):
+    """
+    Specifies a sandbox's current status (i.e. is it booting up, shutting down,
+    actively being created, etc.).
+    """
+
+    SHUT_DOWN = 1
+    BOOTING_UPDATE = 2
+    BOOTING_WORK = 3
+    BOOTED_UPDATE = 4
+    BOOTED_WORK = 5
+    SHUTTING_DOWN = 6
+    CONFIG = 7
+    CREATE = 8
+    DELETE = 9
+    CLONE = 10
 
 
 class SmdCommon:
@@ -83,6 +101,7 @@ class SmdCommon:
     max_mem_size: int = 1024 * 1024 * 1024 * 1024
     max_cpu_weight: int = 10000
     max_io_weight: int = 10000
+    correlation_id_bound: int = 2**128
 
     @staticmethod
     def validate_id(

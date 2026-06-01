@@ -1036,7 +1036,7 @@ class SmdCommServerDamagedSandboxesStartMsg(
 class SmdCommServerDamagedSandboxMsg(
     SmdCommServerMsg,
     name="DAMAGED_SANDBOX",
-    arg_count=2,
+    arg_count=1,
     trailing_binary=False,
     do_broadcast=False,
 ):
@@ -1054,14 +1054,9 @@ class SmdCommServerDamagedSandboxMsg(
         assert arg_list is not None
         SmdCommon.validate_id(
             arg_list[0],
-            [SmdValidateType.UUID],
-            "Sandbox UUID failed validation",
+            [SmdValidateType.ABSOLUTE_PATH],
+            "Sandbox path failed validation",
         )
-        ## The second argument (the sandbox name) is intentionally not
-        ## validated, as it may be the special string '<unknown>', which is not
-        ## a valid sandbox name. The code that constructs this object is
-        ## expected to ensure malicious sandbox names don't make it into this
-        ## message.
 
 
 class SmdCommServerDamagedSandboxesEndMsg(
@@ -1179,7 +1174,7 @@ class SmdCommServerConfigFailedMsg(
 class SmdCommServerConfigInfoStartMsg(
     SmdCommServerMsg,
     name="CONFIG_INFO_START",
-    arg_count=0,
+    arg_count=1,
     trailing_binary=False,
     do_broadcast=True,
 ):
@@ -1187,6 +1182,20 @@ class SmdCommServerConfigInfoStartMsg(
     Informs the client that messages defining a sandbox's configuration are
     about to be sent.
     """
+
+    def __init__(
+        self,
+        correlation_id: int,
+        arg_list: list[str] | None = None,
+        binary_blob: bytes | None = None,
+    ) -> None:
+        super().__init__(correlation_id, arg_list, binary_blob)
+        assert arg_list is not None
+        SmdCommon.validate_id(
+            arg_list[0],
+            [SmdValidateType.UUID],
+            "Sandbox UUID failed validation",
+        )
 
 
 class SmdCommServerConfigInfoEndMsg(
@@ -1255,7 +1264,7 @@ class SmdCommServerDeleteFailedMsg(
 class SmdCommServerCloneInprogressMsg(
     SmdCommServerMsg,
     name="CLONE_INPROGRESS",
-    arg_count=3,
+    arg_count=1,
     trailing_binary=False,
     do_broadcast=True,
 ):
@@ -1274,17 +1283,7 @@ class SmdCommServerCloneInprogressMsg(
         SmdCommon.validate_id(
             arg_list[0],
             [SmdValidateType.UUID],
-            "Original sandbox UUID failed validation",
-        )
-        SmdCommon.validate_id(
-            arg_list[1],
-            [SmdValidateType.UUID],
             "Cloned sandbox UUID failed validation",
-        )
-        SmdCommon.validate_id(
-            arg_list[2],
-            [SmdValidateType.SANDBOX_NAME],
-            "Cloned sandbox name failed validation",
         )
 
 
@@ -1346,13 +1345,32 @@ class SmdCommServerBootInprogressMsg(
 class SmdCommServerBootSuccessMsg(
     SmdCommServerMsg,
     name="BOOT_SUCCESS",
-    arg_count=0,
+    arg_count=2,
     trailing_binary=False,
     do_broadcast=True,
 ):
     """
     Informs the client that a sandbox has been booted.
     """
+
+    def __init__(
+        self,
+        correlation_id: int,
+        arg_list: list[str] | None = None,
+        binary_blob: bytes | None = None,
+    ) -> None:
+        super().__init__(correlation_id, arg_list, binary_blob)
+        assert arg_list is not None
+        SmdCommon.validate_id(
+            arg_list[0],
+            [SmdValidateType.UUID],
+            "Sandbox UUID failed validation",
+        )
+        SmdCommon.validate_id(
+            arg_list[1],
+            [SmdValidateType.BOOT_MODE],
+            "Boot mode failed validation",
+        )
 
 
 class SmdCommServerBootFailedMsg(
@@ -2073,12 +2091,12 @@ class SmdCommBidiCpuWeightMsg(
 
 
 ## Commented out until support for VM sandboxing is added.
-#class SmdCommBidiCpuCoresMdg(
+# class SmdCommBidiCpuCoresMsg(
 #    SmdCommBidiMsg,
 #    name="CPU_CORES",
 #    arg_count=1,
 #    trailing_binary=False,
-#):
+# ):
 #    """
 #    Specifies a sandbox's CPU core count. (Note that this is unused when using
 #    namespace-based sandboxing; it is intended for use with VM-based
