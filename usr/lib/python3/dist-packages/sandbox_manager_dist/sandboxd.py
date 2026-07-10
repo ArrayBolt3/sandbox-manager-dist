@@ -361,8 +361,14 @@ class SandboxdCommThread:
         self.config_broadcast_thread_list: list[SandboxdCommThread] = []
 
         ## Specifies which functions correlate to which client-sent messages.
+        ##
+        ## NOTE: Only functions that handle messages derived from
+        ## SmdCommClientMsg and SmdCommBidiMsg should be specified here.
+        ## Python type-hinting likely isn't powerful enough for us to enforce
+        ## this at lint time (we'd need some way to distinguish two types of
+        ## callables from each other at runtime in a way MyPy understands).
         self.message_handler_map: dict[
-            type[SmdBaseMsg], Callable[[SmdCommClientMsg], None]
+            type[SmdBaseMsg], Callable[[SmdBaseMsg], None]
         ] = {
             SmdCommClientSyncMsg: self.client_sync_handler,
             SmdCommClientQueryNeedRestartMsg: (
@@ -497,8 +503,7 @@ class SandboxdCommThread:
             raise ConnectionError(
                 f"No handler for message type '{str(type(client_msg))}'"
             )
-        assert isinstance(client_msg, SmdCommClientMsg)
-        handler_func: Callable[[SmdCommClientMsg], None] = (
+        handler_func: Callable[[SmdBaseMsg], None] = (
             self.message_handler_map[type(client_msg)]
         )
         handler_func(client_msg)
@@ -576,7 +581,7 @@ class SandboxdCommThread:
     ## all called by self.handle_incoming_message(), which looks up the
     ## handlers to execute from self.message_handler_map.
 
-    def client_sync_handler(self, client_msg: SmdCommClientMsg) -> None:
+    def client_sync_handler(self, client_msg: SmdBaseMsg) -> None:
         """
         Handles SYNC messages.
         """
@@ -629,7 +634,7 @@ class SandboxdCommThread:
         self.client_is_long_running = True
 
     def client_query_need_restart_handler(
-        self, client_msg: SmdCommClientMsg
+        self, client_msg: SmdBaseMsg
     ) -> None:
         """
         Handles QUERY_NEED_RESTART messages.
@@ -646,7 +651,7 @@ class SandboxdCommThread:
         )
 
     def client_restart_handler(
-        self, client_msg: SmdCommClientMsg
+        self, client_msg: SmdBaseMsg
     ) -> None:
         """
         Handles RESTART messages.
