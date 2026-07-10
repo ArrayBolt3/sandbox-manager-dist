@@ -18,7 +18,6 @@ import logging
 import multiprocessing as mp
 import os
 import queue
-import secrets
 import select
 import shutil
 import sys
@@ -602,6 +601,30 @@ class SandboxdCommThread:
             )
             for message in message_batch:
                 self.comm_session.send_msg(message)
+        if len(SandboxdGlobal.damaged_sandbox_list) != 0:
+            damaged_sandbox_correlation_id = SmdCommon.new_correlation_id()
+            self.comm_session.send_msg(
+                SmdCommServerDamagedSandboxesStartMsg(
+                    damaged_sandbox_correlation_id
+                )
+            )
+            for damaged_sandbox_state in SandboxdGlobal.damaged_sandbox_list:
+                if (
+                    damaged_sandbox_state.user_id_numeric
+                    != self.comm_session.user_id_numeric
+                ):
+                    continue
+                self.comm_session.send_msg(
+                    SmdCommServerDamagedSandboxMsg(
+                        damaged_sandbox_correlation_id,
+                        [damaged_sandbox_state.path],
+                    )
+                )
+            self.comm_session.send_msg(
+                SmdCommServerDamagedSandboxesEndMsg(
+                    damaged_sandbox_correlation_id
+                )
+            )
 
         self.client_is_long_running = True
 
@@ -703,7 +726,7 @@ def get_messages_for_sandbox_state(
     """
 
     output_list: list[SmdCommServerMsg | SmdCommBidiMsg] = []
-    main_correlation_id: int = secrets.randbelow(SmdCommon.correlation_id_bound)
+    main_correlation_id: int = SmdCommon.new_correlation_id()
 
     if (
         sandbox_state.sandbox_status != SmdSandboxStatus.SHUT_DOWN
@@ -828,7 +851,7 @@ def get_messages_for_sandbox_state(
     ## leading messages are sent before. SmdSandboxStatus.SHUT_DOWN is not
     ## handled by either the leading or trailing blocks because it doesn't need
     ## any extra messages accompanying it.
-    new_correlation_id: int = secrets.randbelow(SmdCommon.correlation_id_bound)
+    new_correlation_id: int = SmdCommon.new_correlation_id()
     match sandbox_state.sandbox_status:
         case SmdSandboxStatus.BOOTING_UPDATE:
             output_list.append(
@@ -1068,10 +1091,12 @@ def prepare_sandbox_dir() -> None:
         sys.exit(1)
 
 
-def validate_sandbox_repo() -> None:
+def validate_sandbox_repo() -> list[Path]:
     """
-    Validates that all sandboxes directories have expected contents.
+    Returns a list of all sandbox directories that have expected contents.
     """
+
+    valid_sandbox_dir_list: list[Path] = []
 
     for sandbox_user_path in SmdCommon.sandbox_dir.iterdir():
         try:
@@ -1144,94 +1169,97 @@ def validate_sandbox_repo() -> None:
                     )
                     continue
 
+            valid_sandbox_dir_list.append(sandbox_path)
 
-def load_sandbox_config() -> None:
+    return valid_sandbox_dir_list
+
+
+def load_sandbox_config(valid_sandbox_dir_list: list[Path]) -> None:
     """
     Loads the configuration files for all sandboxes.
     """
 
-    for sandbox_user_path in SmdCommon.sandbox_dir.iterdir():
-        for sandbox_path in sandbox_user_path.iterdir():
-            config_path: Path = Path(
-                sandbox_path, SmdCommon.sandbox_config_file
-            )
-            try:
-                config_dict: dict[str, Any] = (
-                    strict_config_parser.parse_config_files(
-                        conf_item_list=[str(config_path)],
-                        conf_schema=SandboxdGlobal.conf_schema,
-                    )
-                )
-            except Exception as e:
-                logging.warning(
-                    "Could not load config file '%s'", config_path, exc_info=e
-                )
-                SandboxdGlobal.damaged_sandbox_list.append(
-                    DamagedSandboxInfo(
-                        int(sandbox_user_path.name),
-                        str(sandbox_path),
-                    )
-                )
-                continue
-
-            ## All the asserts here are just to make mypy happy.
-            assert isinstance(config_dict["name"], str)
-            assert isinstance(config_dict["description"], str)
-            assert isinstance(config_dict["root_vol_size"], int)
-            assert isinstance(config_dict["data_vol_size"], int)
-            assert isinstance(config_dict["memory"], int)
-            assert isinstance(config_dict["cpu_weight"], int)
-            # assert isinstance(config_dict["cpu_cores"], int)
-            assert isinstance(config_dict["io_weight"], int)
-            assert isinstance(config_dict["audio_enabled"], bool)
-            assert isinstance(config_dict["wayland_enabled"], bool)
-            assert isinstance(config_dict["x11_enabled"], bool)
-            assert isinstance(config_dict["three_d_enabled"], bool)
-            assert isinstance(config_dict["network_enabled"], bool)
-            assert isinstance(config_dict["nested_sandboxing_enabled"], bool)
-            assert isinstance(config_dict["shared_fso_list"], list)
-            assert isinstance(config_dict["shared_device_list"], list)
-            assert all(
-                isinstance(x, str) for x in config_dict["shared_device_list"]
-            )
-
-            shared_fso_list: list[SharedFsoState] = []
-            for shared_fso_blob in config_dict["shared_fso_list"]:
-                assert isinstance(shared_fso_blob["read_write"], bool)
-                assert isinstance(shared_fso_blob["host_path"], str)
-                assert isinstance(shared_fso_blob["sandbox_path"], str)
-                shared_fso_list.append(
-                    SharedFsoState(
-                        shared_fso_blob["read_write"],
-                        shared_fso_blob["host_path"],
-                        shared_fso_blob["sandbox_path"],
-                    )
-                )
-
-            SandboxdGlobal.sandbox_state_list.append(
-                SandboxState(
-                    uuid=sandbox_path.name,
-                    user_id_numeric=int(sandbox_user_path.name),
-                    name=config_dict["name"],
-                    description=config_dict["description"],
-                    root_vol_size=config_dict["root_vol_size"],
-                    data_vol_size=config_dict["data_vol_size"],
-                    memory=config_dict["memory"],
-                    cpu_weight=config_dict["cpu_weight"],
-                    # cpu_cores=config_dict["cpu_cores"],
-                    io_weight=config_dict["io_weight"],
-                    audio_enabled=config_dict["audio_enabled"],
-                    wayland_enabled=config_dict["wayland_enabled"],
-                    x11_enabled=config_dict["x11_enabled"],
-                    three_d_enabled=config_dict["three_d_enabled"],
-                    network_enabled=config_dict["network_enabled"],
-                    nested_sandboxing_enabled=config_dict[
-                        "nested_sandboxing_enabled"
-                    ],
-                    shared_fso_list=shared_fso_list,
-                    shared_device_list=config_dict["shared_device_list"],
+    for sandbox_path in valid_sandbox_dir_list:
+        config_path: Path = Path(
+            sandbox_path, SmdCommon.sandbox_config_file
+        )
+        try:
+            config_dict: dict[str, Any] = (
+                strict_config_parser.parse_config_files(
+                    conf_item_list=[str(config_path)],
+                    conf_schema=SandboxdGlobal.conf_schema,
                 )
             )
+        except Exception as e:
+            logging.warning(
+                "Could not load config file '%s'", config_path, exc_info=e
+            )
+            SandboxdGlobal.damaged_sandbox_list.append(
+                DamagedSandboxInfo(
+                    int(sandbox_path.parent.name),
+                    str(sandbox_path),
+                )
+            )
+            continue
+
+        ## All the asserts here are just to make mypy happy.
+        assert isinstance(config_dict["name"], str)
+        assert isinstance(config_dict["description"], str)
+        assert isinstance(config_dict["root_vol_size"], int)
+        assert isinstance(config_dict["data_vol_size"], int)
+        assert isinstance(config_dict["memory"], int)
+        assert isinstance(config_dict["cpu_weight"], int)
+        # assert isinstance(config_dict["cpu_cores"], int)
+        assert isinstance(config_dict["io_weight"], int)
+        assert isinstance(config_dict["audio_enabled"], bool)
+        assert isinstance(config_dict["wayland_enabled"], bool)
+        assert isinstance(config_dict["x11_enabled"], bool)
+        assert isinstance(config_dict["three_d_enabled"], bool)
+        assert isinstance(config_dict["network_enabled"], bool)
+        assert isinstance(config_dict["nested_sandboxing_enabled"], bool)
+        assert isinstance(config_dict["shared_fso_list"], list)
+        assert isinstance(config_dict["shared_device_list"], list)
+        assert all(
+            isinstance(x, str) for x in config_dict["shared_device_list"]
+        )
+
+        shared_fso_list: list[SharedFsoState] = []
+        for shared_fso_blob in config_dict["shared_fso_list"]:
+            assert isinstance(shared_fso_blob["read_write"], bool)
+            assert isinstance(shared_fso_blob["host_path"], str)
+            assert isinstance(shared_fso_blob["sandbox_path"], str)
+            shared_fso_list.append(
+                SharedFsoState(
+                    shared_fso_blob["read_write"],
+                    shared_fso_blob["host_path"],
+                    shared_fso_blob["sandbox_path"],
+                )
+            )
+
+        SandboxdGlobal.sandbox_state_list.append(
+            SandboxState(
+                uuid=sandbox_path.name,
+                user_id_numeric=int(sandbox_path.parent.name),
+                name=config_dict["name"],
+                description=config_dict["description"],
+                root_vol_size=config_dict["root_vol_size"],
+                data_vol_size=config_dict["data_vol_size"],
+                memory=config_dict["memory"],
+                cpu_weight=config_dict["cpu_weight"],
+                # cpu_cores=config_dict["cpu_cores"],
+                io_weight=config_dict["io_weight"],
+                audio_enabled=config_dict["audio_enabled"],
+                wayland_enabled=config_dict["wayland_enabled"],
+                x11_enabled=config_dict["x11_enabled"],
+                three_d_enabled=config_dict["three_d_enabled"],
+                network_enabled=config_dict["network_enabled"],
+                nested_sandboxing_enabled=config_dict[
+                    "nested_sandboxing_enabled"
+                ],
+                shared_fso_list=shared_fso_list,
+                shared_device_list=config_dict["shared_device_list"],
+            )
+        )
 
 
 def prep_sock_notify_pipe() -> None:
@@ -1583,8 +1611,8 @@ def main() -> NoReturn:
     cleanup_old_state_dir()
     populate_state_dir()
     prepare_sandbox_dir()
-    validate_sandbox_repo()
-    load_sandbox_config()
+    valid_sandbox_dir_list: list[Path] = validate_sandbox_repo()
+    load_sandbox_config(valid_sandbox_dir_list)
     open_control_socket()
     prep_sock_notify_pipe()
     control_handler_thread: Thread = Thread(

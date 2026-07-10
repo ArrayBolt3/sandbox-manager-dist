@@ -10,6 +10,7 @@ sandbox-manager-dist.
 
 import re
 import pwd
+import secrets
 from pathlib import Path
 from typing import Callable
 from enum import Enum
@@ -191,3 +192,11 @@ class SmdCommon:
             pass
 
         return None
+
+    @staticmethod
+    def new_correlation_id() -> int:
+        """
+        Generates a new random correlation ID.
+        """
+
+        return secrets.randbelow(SmdCommon.correlation_id_bound)
