@@ -21,6 +21,7 @@ import queue
 import select
 import shutil
 import sys
+import traceback
 from dataclasses import dataclass
 from multiprocessing.connection import Connection
 from pathlib import Path
@@ -63,7 +64,8 @@ class SandboxdGlobal:
     ## simultaneously, and the old one may have to be rolled back to in the
     ## event of a failure.
     backup_sandbox_state_list: list[SandboxState] = []
-    damaged_sandbox_list: list[DamagedSandboxInfo] = []
+    damaged_sandbox_set: set[DamagedSandboxInfo] = set()
+    damaged_sandbox_set_lock: Lock = Lock()
     socket_list: list[SmdServerSocket] = []
     comm_thread_list: list[SandboxdCommThread] = []
     session_list_lock: Lock = Lock()
@@ -375,6 +377,9 @@ class SandboxdCommThread:
                 self.client_query_need_restart_handler
             ),
             SmdCommClientRestartMsg: self.client_restart_handler,
+            SmdCommClientDeleteDamagedSandboxesMsg: (
+                self.client_delete_damaged_sandboxes_handler
+            ),
             ## TODO: add more handlers here
         }
 
@@ -606,30 +611,31 @@ class SandboxdCommThread:
             )
             for message in message_batch:
                 self.comm_session.send_msg(message)
-        if len(SandboxdGlobal.damaged_sandbox_list) != 0:
-            damaged_sandbox_correlation_id = SmdCommon.new_correlation_id()
-            self.comm_session.send_msg(
-                SmdCommServerDamagedSandboxesStartMsg(
-                    damaged_sandbox_correlation_id
-                )
-            )
-            for damaged_sandbox_state in SandboxdGlobal.damaged_sandbox_list:
-                if (
-                    damaged_sandbox_state.user_id_numeric
-                    != self.comm_session.user_id_numeric
-                ):
-                    continue
+        with SandboxdGlobal.damaged_sandbox_set_lock:
+            if len(SandboxdGlobal.damaged_sandbox_set) != 0:
+                damaged_sandbox_correlation_id = SmdCommon.new_correlation_id()
                 self.comm_session.send_msg(
-                    SmdCommServerDamagedSandboxMsg(
-                        damaged_sandbox_correlation_id,
-                        [damaged_sandbox_state.path],
+                    SmdCommServerDamagedSandboxesStartMsg(
+                        damaged_sandbox_correlation_id
                     )
                 )
-            self.comm_session.send_msg(
-                SmdCommServerDamagedSandboxesEndMsg(
-                    damaged_sandbox_correlation_id
+                for damaged_sandbox_state in SandboxdGlobal.damaged_sandbox_set:
+                    if (
+                        damaged_sandbox_state.user_id_numeric
+                        != self.comm_session.user_id_numeric
+                    ):
+                        continue
+                    self.comm_session.send_msg(
+                        SmdCommServerDamagedSandboxMsg(
+                            damaged_sandbox_correlation_id,
+                            [damaged_sandbox_state.path],
+                        )
+                    )
+                self.comm_session.send_msg(
+                    SmdCommServerDamagedSandboxesEndMsg(
+                        damaged_sandbox_correlation_id
+                    )
                 )
-            )
 
         self.client_is_long_running = True
 
@@ -708,6 +714,63 @@ class SandboxdCommThread:
                 ## Note that this doesn't immediately terminate, it just
                 ## instructs the main loop to terminate.
                 self.terminate()
+
+    def client_delete_damaged_sandboxes_handler(
+        self, client_msg: SmdBaseMsg
+    ) -> None:
+        """
+        Handles DELETE_DAMAGED_SANDBOXES messages.
+        """
+
+        assert isinstance(client_msg, SmdCommClientDeleteDamagedSandboxesMsg)
+
+        removed_sandbox_set: set[DamagedSandboxInfo] = set()
+        remove_exc: Exception | None = None
+
+        with SandboxdGlobal.damaged_sandbox_set_lock:
+            for damaged_sandbox_info in SandboxdGlobal.damaged_sandbox_set:
+                if (
+                    damaged_sandbox_info.user_id_numeric
+                    != self.comm_session.user_id_numeric
+                ):
+                    continue
+                try:
+                    shutil.rmtree(damaged_sandbox_info.path)
+                except Exception as e:
+                    logging.error(
+                        "Could not delete damaged sandbox for user '%s' at "
+                        + "path '%s'",
+                        damaged_sandbox_info.user_id_numeric,
+                        damaged_sandbox_info.path,
+                        exc_info=e,
+                    )
+                    remove_exc = e
+                    break
+                removed_sandbox_set.add(damaged_sandbox_info)
+
+            for removed_sandbox_info in removed_sandbox_set:
+                SandboxdGlobal.damaged_sandbox_set.remove(removed_sandbox_info)
+
+        if remove_exc is None:
+            logging.info(
+                "Deleted damaged sandboxes for user '%s'",
+                self.comm_session.user_id_numeric,
+            )
+            self.comm_session.send_msg(
+                SmdCommServerDamagedSandboxesDeletedMsg(
+                    client_msg.correlation_id
+                )
+            )
+        else:
+            ## No logging here, we already logged the error earlier.
+            self.comm_session.send_msg(
+                SmdCommServerDamagedSandboxDeleteFailedMsg(
+                    client_msg.correlation_id,
+                    binary_blob="".join(
+                        traceback.format_exception(remove_exc)
+                    ).encode(encoding="utf-8")
+                )
+            )
 
     ## TODO: add more handlers here
 
@@ -1147,7 +1210,7 @@ def validate_sandbox_repo() -> list[Path]:
                     sandbox_path,
                     exc_info=e,
                 )
-                SandboxdGlobal.damaged_sandbox_list.append(
+                SandboxdGlobal.damaged_sandbox_set.add(
                     DamagedSandboxInfo(
                         int(sandbox_user_path.name),
                         str(sandbox_path),
@@ -1166,7 +1229,7 @@ def validate_sandbox_repo() -> list[Path]:
                         file_type,
                         file_path,
                     )
-                    SandboxdGlobal.damaged_sandbox_list.append(
+                    SandboxdGlobal.damaged_sandbox_set.add(
                         DamagedSandboxInfo(
                             int(sandbox_user_path.name),
                             str(sandbox_path),
@@ -1199,7 +1262,7 @@ def load_sandbox_config(valid_sandbox_dir_list: list[Path]) -> None:
             logging.warning(
                 "Could not load config file '%s'", config_path, exc_info=e
             )
-            SandboxdGlobal.damaged_sandbox_list.append(
+            SandboxdGlobal.damaged_sandbox_set.add(
                 DamagedSandboxInfo(
                     int(sandbox_path.parent.name),
                     str(sandbox_path),

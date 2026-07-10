@@ -358,6 +358,17 @@ class SmdCommClientRestartMsg(
     Asks the server to restart itself.
     """
 
+class SmdCommClientDeleteDamagedSandboxesMsg(
+    SmdCommClientMsg,
+    name="DELETE_DAMAGED_SANDBOXES",
+    arg_count=0,
+    trailing_binary=False,
+):
+    """
+    Asks the server to delete any damaged sandboxes that exist for the calling
+    user.
+    """
+
 
 class SmdCommClientCreateStartMsg(
     SmdCommClientMsg,
@@ -1068,6 +1079,32 @@ class SmdCommServerDamagedSandboxesEndMsg(
 ):
     """
     Informs the client that info about damaged sandboxes has been sent.
+    """
+
+
+class SmdCommServerDamagedSandboxesDeletedMsg(
+    SmdCommServerMsg,
+    name="DAMAGED_SANDBOXES_DELETED",
+    arg_count=0,
+    trailing_binary=False,
+    do_broadcast=False,
+):
+    """
+    Informs the client that all damaged sandboxes belonging to its user have
+    been deleted.
+    """
+
+
+class SmdCommServerDamagedSandboxDeleteFailedMsg(
+    SmdCommServerMsg,
+    name="DAMAGED_SANDBOX_DELETE_FAILED",
+    arg_count=0,
+    trailing_binary=True,
+    do_broadcast=False,
+):
+    """
+    Informs the client that an error occurred trying to delete a damaged
+    sandbox.
     """
 
 
