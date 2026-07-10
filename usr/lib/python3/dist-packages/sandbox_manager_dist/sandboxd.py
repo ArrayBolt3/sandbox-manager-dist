@@ -23,6 +23,7 @@ import shutil
 import sys
 import traceback
 from dataclasses import dataclass
+from enum import Enum
 from multiprocessing.connection import Connection
 from pathlib import Path
 from queue import SimpleQueue
@@ -178,6 +179,74 @@ class SandboxState:
     sandbox_status: SmdSandboxStatus = SmdSandboxStatus.SHUT_DOWN
 
 
+class FluxSandboxStateType(Enum):
+    """
+    Specifies what operation a FluxSandboxState object is associated with.
+    """
+
+    CREATE = 1
+    CONFIG = 2
+
+
+class FluxSandboxState:
+    """
+    In-flux configuration and state info for a sandbox. This is used for
+    handling CREATE_* and CONFIG_* messages from the client.
+    """
+
+    def __init__(
+            self,
+            op_type: FluxSandboxStateType,
+            correlation_id: int,
+            user_id_numeric: int
+    ) -> None:
+        self.op_type: FluxSandboxStateType = op_type
+        self.correlation_id = correlation_id
+        self.set_dict: dict[str, bool] = {
+            "uuid": False,
+            "name": False,
+            "description": False,
+            "root_vol_size": False,
+            "data_vol_size": False,
+            "memory": False,
+            "cpu_weight": False,
+            "io_weight": False,
+            "audio_enabled": False,
+            "wayland_enabled": False,
+            "x11_enabled": False,
+            "three_d_enabled": False,
+            "network_enabled": False,
+            "nested_sandboxing_enabled": False,
+        }
+        self.state: SandboxState = SandboxState(
+            uuid="",
+            user_id_numeric=user_id_numeric,
+            name="",
+            description="",
+            root_vol_size=0,
+            data_vol_size=0,
+            memory=0,
+            cpu_weight=0,
+            io_weight=0,
+            audio_enabled=False,
+            wayland_enabled=False,
+            x11_enabled=False,
+            three_d_enabled=False,
+            network_enabled=False,
+            nested_sandboxing_enabled=False,
+            shared_fso_list=[],
+            shared_device_list=[],
+        )
+
+    def all_options_set(self) -> bool:
+        """
+        Returns True if all configuration options have been set, False
+        otherwise.
+        """
+
+        return all(self.set_dict.items())
+
+
 @dataclass
 class DamagedSandboxInfo:
     """
@@ -311,8 +380,10 @@ class SandboxdCommThread:
     ##   messages received from the client.
     ## * Each handler has a message correlation ID associated with it.
     ##   Incoming messages that have a correlation ID matching a running
-    ##   handler are blindly forwarded to that handler; it is the handler's
-    ##   responsibility to handle invalid messages correctly.
+    ##   handler are forwarded to that handler; it is the handler's
+    ##   responsibility to handle invalid messages correctly. Note that the
+    ##   daemon itself may also process the output of handler processes, for
+    ##   instance to register a newly created sandbox.
     ## * Handlers ALWAYS run with the same privileges as sandboxd itself. We
     ##   do NOT spawn handlers inside the sandbox, because multiprocessing
     ##   pipes use Python's pickle serialization format internally, which
@@ -362,6 +433,10 @@ class SandboxdCommThread:
         ## A list of threads we can broadcast config messages to.
         self.config_broadcast_thread_list: list[SandboxdCommThread] = []
 
+        ## A set of sandboxes with their configuration in flux pre-creation
+        ## or pre-config-application.
+        self.flux_sandbox_state_list: set[FluxSandboxState] = set()
+
         ## Specifies which functions correlate to which client-sent messages.
         ##
         ## NOTE: Only functions that handle messages derived from
@@ -380,6 +455,8 @@ class SandboxdCommThread:
             SmdCommClientDeleteDamagedSandboxesMsg: (
                 self.client_delete_damaged_sandboxes_handler
             ),
+            SmdCommClientCreateStartMsg: self.client_create_start_handler,
+            SmdCommClientCreateEndMsg: self.client_create_end_handler,
             ## TODO: add more handlers here
         }
 
@@ -771,6 +848,51 @@ class SandboxdCommThread:
                     ).encode(encoding="utf-8")
                 )
             )
+
+    def client_create_start_handler(self, client_msg: SmdBaseMsg) -> None:
+        """
+        Handles CREATE_START messages.
+        """
+
+        assert isinstance(client_msg, SmdCommClientCreateStartMsg)
+        assert self.comm_session.user_id_numeric is not None
+
+        self.flux_sandbox_state_list.add(
+            FluxSandboxState(
+                op_type=FluxSandboxStateType.CREATE,
+                correlation_id=client_msg.correlation_id,
+                user_id_numeric=self.comm_session.user_id_numeric,
+            )
+        )
+
+    def client_create_end_handler(self, client_msg: SmdBaseMsg) -> None:
+        """
+        Handles CREATE_END messages.
+        """
+
+        assert isinstance(client_msg, SmdCommClientCreateEndMsg)
+
+        target_flux_sandbox_state: FluxSandboxState | None = None
+        for flux_sandbox_state in self.flux_sandbox_state_list:
+            if (
+                flux_sandbox_state.correlation_id == client_msg.correlation_id
+                and flux_sandbox_state.op_type == FluxSandboxStateType.CREATE
+            ):
+                target_flux_sandbox_state = flux_sandbox_state
+                break
+        if target_flux_sandbox_state is None:
+            logging.error(
+                "Received CREATE_END message from user '%s' with invalid "
+                + "correlation ID",
+                self.comm_session.user_id_numeric,
+            )
+            self.comm_session.send_msg(
+                SmdCommServerConfigInvalidMsg(
+                    correlation_id=client_msg.correlation_id
+                )
+            )
+
+        ## TODO: Add code to kick off sandbox creation here
 
     ## TODO: add more handlers here
 
