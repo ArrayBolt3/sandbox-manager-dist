@@ -1919,6 +1919,9 @@ interface directly.
       sandboxes belonging to its user account have been deleted. Must be
       correlated to a client-sent `DELETE_DAMAGED_SANDBOXES` message. Takes no
       arguments. Does not include a binary blob.
+      * Note, damaged sandbox deletion is implemented synchronously since the
+        client is expected to wait for operation to finish before doing
+        anything else. This could be changed if it proves to be problematic.
     * `DAMAGED_SANDBOX_DELETE_FAILED` - Informs the frontend that not all
       damaged sandboxes could be deleted. Must be correlated to a client-sent
       `DELETE_DAMAGED_SANDBOXES` message. Takes no arguments. Includes a

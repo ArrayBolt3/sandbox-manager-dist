@@ -17,7 +17,7 @@ from multiprocessing.connection import Connection
 
 
 def nspawn_manager_main(
-    ctp_pipe: Connection, sandbox_uuid: str, boot_mode: str
+    ctp_pipe: Connection, sandbox_uuid_str: str, boot_mode: str
 ) -> None:
     """
     Entry point for nspawn_manager.py.

@@ -3,6 +3,8 @@
 # Copyright (C) 2026 - 2026 ENCRYPTED SUPPORT LLC <adrelanos@whonix.org>
 # See the file COPYING for copying conditions.
 
+# pylint: disable=broad-exception-caught
+
 """
 common.py - Common functions and definitions used throughout
 sandbox-manager-dist.
@@ -11,6 +13,7 @@ sandbox-manager-dist.
 import re
 import pwd
 import secrets
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 from enum import Enum
@@ -39,13 +42,15 @@ class SmdValidateType(Enum):
     DEVICE_PATH = 15
 
 
-class SmdSocketType(Enum):
+@dataclass
+class SmdSharedFsoState:
     """
-    Enum for defining socket type.
+    Configuration and state info for a shared folder or file.
     """
 
-    CONTROL = 1
-    COMMUNICATION = 2
+    read_write: bool
+    host_path: str
+    sandbox_path: str
 
 
 class SmdSandboxStatus(Enum):
@@ -66,6 +71,64 @@ class SmdSandboxStatus(Enum):
     CLONE = 10
 
 
+# pylint: disable=too-many-instance-attributes
+@dataclass
+class SmdSandboxState:
+    """
+    Configuration and state info for a sandbox.
+    """
+
+    uuid_str: str
+    user_id_numeric: int
+    name: str
+    description: str
+    root_vol_size: int
+    data_vol_size: int
+    memory: int
+    cpu_weight: int
+    # cpu_cores: int
+    io_weight: int
+    audio_enabled: bool
+    wayland_enabled: bool
+    x11_enabled: bool
+    three_d_enabled: bool  ## can't have number at start of var name
+    network_enabled: bool
+    nested_sandboxing_enabled: bool
+    shared_fso_list: list[SmdSharedFsoState]
+    shared_device_list: list[str]
+    sandbox_status: SmdSandboxStatus = SmdSandboxStatus.SHUT_DOWN
+
+
+class SmdSocketType(Enum):
+    """
+    Enum for defining socket type.
+    """
+
+    CONTROL = 1
+    COMMUNICATION = 2
+
+
+class SmdEnsureDirStatus(Enum):
+    """
+    Enum for the possible results of a ensure_dir call.
+    """
+
+    SUCCESS = 1
+    CREATE_FAIL = 2
+    CONFLICT = 3
+    CHMOD_FAIL = 4
+
+
+@dataclass
+class SmdEnsureDirResult:
+    """
+    Information about how a ensure_dir call succeeded or failed.
+    """
+
+    status: SmdEnsureDirStatus
+    error_exc: Exception | None
+
+
 class SmdCommon:
     """
     Common functionality class.
@@ -80,7 +143,7 @@ class SmdCommon:
     comm_dir: Path = Path(state_dir, "comm")
 
     user_name_regex: re.Pattern[str] = re.compile(r"[a-z_][-a-z0-9_]*\$?\Z")
-    uuid_regex: re.Pattern[str] = re.compile(
+    uuid_str_regex: re.Pattern[str] = re.compile(
         r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\Z"
     )
     sandbox_name_regex: re.Pattern[str] = re.compile(r"[-_a-zA-Z0-9 ]+\Z")
@@ -126,7 +189,7 @@ class SmdCommon:
                 case SmdValidateType.USER_NAME:
                     target_regex = SmdCommon.user_name_regex
                 case SmdValidateType.UUID:
-                    target_regex = SmdCommon.uuid_regex
+                    target_regex = SmdCommon.uuid_str_regex
                 case SmdValidateType.SANDBOX_NAME:
                     target_regex = SmdCommon.sandbox_name_regex
                 case SmdValidateType.BOOT_MODE:
@@ -200,3 +263,28 @@ class SmdCommon:
         """
 
         return secrets.randbelow(SmdCommon.correlation_id_bound)
+
+    @staticmethod
+    def ensure_dir(
+        dir_path: Path, exists_ok: bool = True
+    ) -> SmdEnsureDirResult:
+        """
+        Creates a directory if it does not exist, chmods it to safe
+        permissions if it does exist.
+        """
+
+        if not dir_path.exists():
+            try:
+                dir_path.mkdir(mode=0o700)
+            except Exception as e:
+                return SmdEnsureDirResult(SmdEnsureDirStatus.CREATE_FAIL, e)
+        elif not dir_path.is_dir():
+            return SmdEnsureDirResult(SmdEnsureDirStatus.CONFLICT, None)
+        else:
+            if not exists_ok:
+                return SmdEnsureDirResult(SmdEnsureDirStatus.CONFLICT, None)
+            try:
+                dir_path.chmod(0o700)
+            except Exception as e:
+                return SmdEnsureDirResult(SmdEnsureDirStatus.CHMOD_FAIL, e)
+        return SmdEnsureDirResult(SmdEnsureDirStatus.SUCCESS, None)

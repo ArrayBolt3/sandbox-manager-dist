@@ -22,6 +22,7 @@ import select
 import shutil
 import sys
 import traceback
+import uuid
 from dataclasses import dataclass
 from enum import Enum
 from multiprocessing.connection import Connection
@@ -43,6 +44,7 @@ from .common import *
 from .protocol import *
 
 from .nspawn_manager import nspawn_manager_main
+from .create_handler import create_handler_main
 
 
 # pylint: disable=too-few-public-methods
@@ -57,20 +59,21 @@ class SandboxdGlobal:
     )
     old_umask: int = 0
 
-    sandbox_state_list: list[SandboxState] = []
-    sandbox_state_list_lock: Lock = Lock()
+    sandbox_state_set: set[SmdSandboxState] = set()
     ## Backup sandbox config only exists when a sandbox is reconfigured via
     ## a CONFIG_START ... CONFIG_END message block from the client. This is
     ## because this is the only situation where a sandbox has two config states
     ## simultaneously, and the old one may have to be rolled back to in the
     ## event of a failure.
-    backup_sandbox_state_list: list[SandboxState] = []
+    backup_sandbox_state_set: set[SmdSandboxState] = set()
+    ## This lock covers both sandbox_state_set and backup_sandbox_state_set.
+    sandbox_state_set_lock: Lock = Lock()
     damaged_sandbox_set: set[DamagedSandboxInfo] = set()
     damaged_sandbox_set_lock: Lock = Lock()
     socket_list: list[SmdServerSocket] = []
     comm_thread_list: list[SandboxdCommThread] = []
     session_list_lock: Lock = Lock()
-    nspawn_manager_list: list[NspawnManager] = []
+    nspawn_manager_set: set[NspawnManager] = set()
 
     sdnotify_object: sdnotify.SystemdNotifier = sdnotify.SystemdNotifier()
 
@@ -90,14 +93,6 @@ class SandboxdGlobal:
                 schema.Regex(SmdCommon.sandbox_name_regex),
             ),
             "description": str,
-            "root_vol_size": schema.And(
-                int,
-                lambda vol_size: 1 <= vol_size <= SmdCommon.max_vol_size,
-            ),
-            "data_vol_size": schema.And(
-                int,
-                lambda vol_size: 1 <= vol_size <= SmdCommon.max_vol_size,
-            ),
             "memory": schema.And(
                 int,
                 lambda mem_size: 1 <= mem_size <= SmdCommon.max_mem_size,
@@ -140,55 +135,16 @@ class SandboxdGlobal:
     )
 
 
-@dataclass
-class SharedFsoState:
+class FluxSmdSandboxStateType(Enum):
     """
-    Configuration and state info for a shared folder or file.
-    """
-
-    read_write: bool
-    host_path: str
-    sandbox_path: str
-
-
-# pylint: disable=too-many-instance-attributes
-@dataclass
-class SandboxState:
-    """
-    Configuration and state info for a sandbox.
-    """
-
-    uuid: str
-    user_id_numeric: int
-    name: str
-    description: str
-    root_vol_size: int
-    data_vol_size: int
-    memory: int
-    cpu_weight: int
-    # cpu_cores: int
-    io_weight: int
-    audio_enabled: bool
-    wayland_enabled: bool
-    x11_enabled: bool
-    three_d_enabled: bool  ## can't have number at start of var name
-    network_enabled: bool
-    nested_sandboxing_enabled: bool
-    shared_fso_list: list[SharedFsoState]
-    shared_device_list: list[str]
-    sandbox_status: SmdSandboxStatus = SmdSandboxStatus.SHUT_DOWN
-
-
-class FluxSandboxStateType(Enum):
-    """
-    Specifies what operation a FluxSandboxState object is associated with.
+    Specifies what operation a FluxSmdSandboxState object is associated with.
     """
 
     CREATE = 1
     CONFIG = 2
 
 
-class FluxSandboxState:
+class FluxSmdSandboxState:
     """
     In-flux configuration and state info for a sandbox. This is used for
     handling CREATE_* and CONFIG_* messages from the client.
@@ -196,14 +152,14 @@ class FluxSandboxState:
 
     def __init__(
             self,
-            op_type: FluxSandboxStateType,
+            op_type: FluxSmdSandboxStateType,
             correlation_id: int,
+            uuid_str: str,
             user_id_numeric: int
     ) -> None:
-        self.op_type: FluxSandboxStateType = op_type
+        self.op_type: FluxSmdSandboxStateType = op_type
         self.correlation_id = correlation_id
         self.set_dict: dict[str, bool] = {
-            "uuid": False,
             "name": False,
             "description": False,
             "root_vol_size": False,
@@ -218,8 +174,19 @@ class FluxSandboxState:
             "network_enabled": False,
             "nested_sandboxing_enabled": False,
         }
-        self.state: SandboxState = SandboxState(
-            uuid="",
+
+        ## This bit could be done more concisely with a ternary, but doing it
+        ## this way will let pylint warn us if we add a new
+        ## FluxSmdSandboxStateType and forget to handle it here.
+        sandbox_status: SmdSandboxStatus
+        match self.op_type:
+            case FluxSmdSandboxStateType.CREATE:
+                sandbox_status = SmdSandboxStatus.CREATE
+            case FluxSmdSandboxStateType.CONFIG:
+                sandbox_status = SmdSandboxStatus.CONFIG
+
+        self.state: SmdSandboxState = SmdSandboxState(
+            uuid_str=uuid_str,
             user_id_numeric=user_id_numeric,
             name="",
             description="",
@@ -236,6 +203,7 @@ class FluxSandboxState:
             nested_sandboxing_enabled=False,
             shared_fso_list=[],
             shared_device_list=[],
+            sandbox_status=sandbox_status
         )
 
     def all_options_set(self) -> bool:
@@ -266,15 +234,14 @@ class HandlerProc:
         self, correlation_id: int, target_func: Callable[[Connection], None]
     ) -> None:
         self.correlation_id = correlation_id
-        ## ptc = parent to child
-        self.ptc_pipe: Connection
-        ## ctp = child to parent
-        self.ctp_pipe: Connection
-        self.ptc_pipe, self.ctp_pipe = mp.Pipe(duplex=True)
+        self.parent_pipe: Connection
+        self.child_pipe: Connection
+        self.parent_pipe, self.child_pipe = mp.Pipe(duplex=True)
         self.child_proc: mp.Process = mp.Process(
-            target=target_func, args=(self.ctp_pipe,)
+            target=target_func, args=(self.child_pipe,)
         )
         self.child_proc.start()
+        self.parent_pipe.send(correlation_id)
 
 
 class NspawnManager:
@@ -283,25 +250,23 @@ class NspawnManager:
     bootup.
     """
 
-    def __init__(self, sandbox_uuid: str, boot_mode: str) -> None:
+    def __init__(self, sandbox_uuid_str: str, boot_mode: str) -> None:
         SmdCommon.validate_id(
-            sandbox_uuid, [SmdValidateType.UUID], "UUID failed validation"
+            sandbox_uuid_str, [SmdValidateType.UUID], "UUID failed validation"
         )
         SmdCommon.validate_id(
             boot_mode,
             [SmdValidateType.BOOT_MODE],
             "Boot mode failed validation",
         )
-        self.sandbox_uuid: str = sandbox_uuid
+        self.sandbox_uuid_str: str = sandbox_uuid_str
         self.boot_mode = boot_mode
-        ## ptc = parent to child
-        self.ptc_pipe: Connection
-        ## ctp = child to parent
-        self.ctp_pipe: Connection
-        self.ptc_pipe, self.ctp_pipe = mp.Pipe(duplex=True)
+        self.parent_pipe: Connection
+        self.child_pipe: Connection
+        self.parent_pipe, self.child_pipe = mp.Pipe(duplex=True)
         self.child_proc: mp.Process = mp.Process(
             target=nspawn_manager_main,
-            args=(self.ctp_pipe, sandbox_uuid, boot_mode),
+            args=(self.child_pipe, sandbox_uuid_str, boot_mode),
         )
         self.child_proc.start()
 
@@ -428,14 +393,14 @@ class SandboxdCommThread:
         self.client_is_long_running: bool = False
 
         ## Actively running handler processes.
-        self.handler_list: list[HandlerProc] = []
+        self.handler_set: set[HandlerProc] = set()
 
         ## A list of threads we can broadcast config messages to.
         self.config_broadcast_thread_list: list[SandboxdCommThread] = []
 
         ## A set of sandboxes with their configuration in flux pre-creation
         ## or pre-config-application.
-        self.flux_sandbox_state_list: set[FluxSandboxState] = set()
+        self.flux_sandbox_state_set: set[FluxSmdSandboxState] = set()
 
         ## Specifies which functions correlate to which client-sent messages.
         ##
@@ -457,8 +422,25 @@ class SandboxdCommThread:
             ),
             SmdCommClientCreateStartMsg: self.client_create_start_handler,
             SmdCommClientCreateEndMsg: self.client_create_end_handler,
-            ## TODO: add more handlers here
+            ## TODO: add more client handlers here
         }
+
+        ## Specifies which hook functions correlate to which
+        ## helper-process-sent messages.
+        self.hook_handler_map: dict[
+            type[SmdBaseMsg], Callable[[SmdBaseMsg], None]
+        ] = {
+            SmdCommServerCreateSuccessMsg: self.server_create_success_handler,
+            SmdCommServerCreateFailedMsg: self.server_create_failed_handler,
+            ## TODO: add more server handlers here
+        }
+
+        self.epoll_obj: select.epoll = select.epoll()
+        self.epoll_obj.register(self.terminate_read_fd, select.EPOLLIN)
+        self.epoll_obj.register(self.notify_read_fd, select.EPOLLIN)
+        self.epoll_obj.register(
+            self.comm_session.server_socket_fileno, select.EPOLLIN
+        )
 
         self.internal_thread: Thread = Thread(
             target=self.thread_main_loop, daemon=True
@@ -474,15 +456,11 @@ class SandboxdCommThread:
         """
 
         assert self.comm_session.server_socket_fileno != -1
-        epoll_obj: select.epoll = select.epoll()
-        epoll_obj.register(self.terminate_read_fd, select.EPOLLIN)
-        epoll_obj.register(self.notify_read_fd, select.EPOLLIN)
-        epoll_obj.register(
-            self.comm_session.server_socket_fileno, select.EPOLLIN
-        )
 
         while True:
-            epoll_event_fd_list: list[int] = [x[0] for x in epoll_obj.poll()]
+            epoll_event_fd_list: list[int] = [
+                x[0] for x in self.epoll_obj.poll()
+            ]
             if self.terminate_read_fd in epoll_event_fd_list:
                 break
 
@@ -537,21 +515,22 @@ class SandboxdCommThread:
             ## send something to a client, handle accordingly
             for handler_pipe_fd in epoll_event_fd_list:
                 source_handler: HandlerProc | None = None
-                for candidate_handler in self.handler_list:
-                    if candidate_handler.ctp_pipe.fileno() == handler_pipe_fd:
+                for candidate_handler in self.handler_set:
+                    if candidate_handler.parent_pipe.fileno() == handler_pipe_fd:
                         source_handler = candidate_handler
                         break
                 if source_handler is None:
                     logging.critical("sandboxd lost track of a handler process")
                     sys.exit(1)
                 try:
-                    recv_obj: Any = source_handler.ctp_pipe.recv()
+                    recv_obj: Any = source_handler.parent_pipe.recv()
                 except EOFError:
                     ## Handler terminated, clean it up
-                    self.handler_list.remove(source_handler)
+                    self.handler_set.remove(source_handler)
                     continue
                 assert isinstance(recv_obj, (SmdCommServerMsg, SmdCommBidiMsg))
                 msg_from_child: SmdCommServerMsg | SmdCommBidiMsg = recv_obj
+                self.handler_message_hook(msg_from_child)
                 try:
                     self.comm_session.send_msg(msg_from_child)
                 except Exception as e:
@@ -563,9 +542,9 @@ class SandboxdCommThread:
 
         ## Close the I/O pipes for all handlers so that they can cleanly
         ## terminate, rather than killing them manually.
-        for single_handler in self.handler_list:
-            single_handler.ptc_pipe.close()
-        self.handler_list.clear()
+        for single_handler in self.handler_set:
+            single_handler.parent_pipe.close()
+        self.handler_set.clear()
 
         ## Notify all other threads that this thread is shutting down so they
         ## can perform any needed cleanup.
@@ -589,6 +568,21 @@ class SandboxdCommThread:
             self.message_handler_map[type(client_msg)]
         )
         handler_func(client_msg)
+
+    def handler_message_hook(
+        self, msg_from_child: SmdCommServerMsg | SmdCommBidiMsg
+    ) -> None:
+        """
+        Determines the handler for a helper-process-sent message and runs it,
+        if one exists.
+        """
+
+        if type(msg_from_child) not in self.hook_handler_map:
+            return
+        handler_func: Callable[[SmdBaseMsg], None] = (
+            self.hook_handler_map[type(msg_from_child)]
+        )
+        handler_func(msg_from_child)
 
     def broadcast_message_maybe(
         self, msg_to_send: SmdCommServerMsg | SmdCommBidiMsg
@@ -676,9 +670,9 @@ class SandboxdCommThread:
 
         assert isinstance(client_msg, SmdCommClientSyncMsg)
 
-        with SandboxdGlobal.sandbox_state_list_lock:
-            sandbox_state_copy: list[SandboxState] = copy.deepcopy(
-                SandboxdGlobal.sandbox_state_list
+        with SandboxdGlobal.sandbox_state_set_lock:
+            sandbox_state_copy: set[SmdSandboxState] = copy.deepcopy(
+                SandboxdGlobal.sandbox_state_set
             )
         for sandbox_state in sandbox_state_copy:
             message_batch: list[SmdCommServerMsg | SmdCommBidiMsg] = (
@@ -753,9 +747,9 @@ class SandboxdCommThread:
 
         should_restart: bool = True
 
-        with SandboxdGlobal.sandbox_state_list_lock:
+        with SandboxdGlobal.sandbox_state_set_lock:
             with SandboxdGlobal.session_list_lock:
-                for sandbox_state in SandboxdGlobal.sandbox_state_list:
+                for sandbox_state in SandboxdGlobal.sandbox_state_set:
                     if (
                         sandbox_state.user_id_numeric
                         != self.comm_session.user_id_numeric
@@ -838,16 +832,17 @@ class SandboxdCommThread:
                     client_msg.correlation_id
                 )
             )
-        else:
-            ## No logging here, we already logged the error earlier.
-            self.comm_session.send_msg(
-                SmdCommServerDamagedSandboxDeleteFailedMsg(
-                    client_msg.correlation_id,
-                    binary_blob="".join(
-                        traceback.format_exception(remove_exc)
-                    ).encode(encoding="utf-8")
-                )
+            return
+
+        ## No logging here, we already logged the error earlier.
+        self.comm_session.send_msg(
+            SmdCommServerDamagedSandboxDeleteFailedMsg(
+                client_msg.correlation_id,
+                binary_blob="".join(
+                    traceback.format_exception(remove_exc)
+                ).encode(encoding="utf-8")
             )
+        )
 
     def client_create_start_handler(self, client_msg: SmdBaseMsg) -> None:
         """
@@ -857,10 +852,11 @@ class SandboxdCommThread:
         assert isinstance(client_msg, SmdCommClientCreateStartMsg)
         assert self.comm_session.user_id_numeric is not None
 
-        self.flux_sandbox_state_list.add(
-            FluxSandboxState(
-                op_type=FluxSandboxStateType.CREATE,
+        self.flux_sandbox_state_set.add(
+            FluxSmdSandboxState(
+                op_type=FluxSmdSandboxStateType.CREATE,
                 correlation_id=client_msg.correlation_id,
+                uuid_str=str(uuid.uuid4()),
                 user_id_numeric=self.comm_session.user_id_numeric,
             )
         )
@@ -870,13 +866,17 @@ class SandboxdCommThread:
         Handles CREATE_END messages.
         """
 
+        ## TODO: The start and end handlers are written, but we need a bunch
+        ## of handlers for accepting config messages from the client before
+        ## the CREATE_END message is received.
+
         assert isinstance(client_msg, SmdCommClientCreateEndMsg)
 
-        target_flux_sandbox_state: FluxSandboxState | None = None
-        for flux_sandbox_state in self.flux_sandbox_state_list:
+        target_flux_sandbox_state: FluxSmdSandboxState | None = None
+        for flux_sandbox_state in self.flux_sandbox_state_set:
             if (
                 flux_sandbox_state.correlation_id == client_msg.correlation_id
-                and flux_sandbox_state.op_type == FluxSandboxStateType.CREATE
+                and flux_sandbox_state.op_type == FluxSmdSandboxStateType.CREATE
             ):
                 target_flux_sandbox_state = flux_sandbox_state
                 break
@@ -891,10 +891,114 @@ class SandboxdCommThread:
                     correlation_id=client_msg.correlation_id
                 )
             )
+            return
+        if not target_flux_sandbox_state.all_options_set():
+            logging.error(
+                "Received CREATE_END message from user '%s', but sandbox "
+                + "accumulated sandbox configuration is incomplete",
+                self.comm_session.user_id_numeric,
+            )
+            self.comm_session.send_msg(
+                SmdCommServerConfigInvalidMsg(
+                    correlation_id=client_msg.correlation_id
+                )
+            )
+            return
 
-        ## TODO: Add code to kick off sandbox creation here
+        ## Start the sandbox creation process. This is a long-running process,
+        ## so we offload it to a separate process.
+        try:
+            sandbox_create_proc: HandlerProc = HandlerProc(
+                client_msg.correlation_id,
+                create_handler_main,
+            )
+            sandbox_create_proc.parent_pipe.send(
+                target_flux_sandbox_state.state
+            )
+        except Exception:
+            self.comm_session.send_msg(
+                SmdCommServerCreateFailedMsg(client_msg.correlation_id)
+            )
+            return
 
-    ## TODO: add more handlers here
+        ## Sandbox creation started successfully, so register the new sandbox
+        ## with the system and keep track of the handler.
+        with SandboxdGlobal.sandbox_state_set_lock:
+            SandboxdGlobal.sandbox_state_set.add(
+                target_flux_sandbox_state.state
+            )
+        ## Do NOT remove target_flux_sandbox_state from
+        ## self.flux_sandbox_state_set yet, it's the only thing binding
+        ## a still-creating sandbox to a correlation ID, and we'll need that
+        ## to remove the sandbox from SandboxdGlobal.sandbox_state_set if
+        ## creation fails.
+        #self.flux_sandbox_state_set.remove(target_flux_sandbox_state)
+        self.epoll_obj.register(
+            sandbox_create_proc.parent_pipe.fileno(), select.EPOLLIN
+        )
+        self.handler_set.add(sandbox_create_proc)
+        self.comm_session.send_msg(
+            SmdCommServerCreateInprogressMsg(
+                client_msg.correlation_id,
+                [target_flux_sandbox_state.state.uuid_str],
+            )
+        )
+
+
+    ## TODO: add more client handlers here
+
+    def server_create_success_handler(self, server_msg: SmdBaseMsg) -> None:
+        """
+        Hook for CREATE_SUCCESS messages.
+        """
+
+        assert isinstance(server_msg, SmdCommServerCreateSuccessMsg)
+
+        ## Remove the sandbox of interest from only the flux sandbox state set.
+        target_flux_sandbox_state: FluxSmdSandboxState | None = None
+        for flux_sandbox_state in self.flux_sandbox_state_set:
+            if flux_sandbox_state.correlation_id == server_msg.correlation_id:
+                target_flux_sandbox_state = flux_sandbox_state
+                break
+        if target_flux_sandbox_state is not None:
+            self.flux_sandbox_state_set.remove(target_flux_sandbox_state)
+        else:
+            logging.critical(
+                "sandboxd lost track of a sandbox, noticed while "
+                + "handling '%s' message",
+                server_msg.name,
+            )
+            sys.exit(1)
+
+    def server_create_failed_handler(self, server_msg: SmdBaseMsg) -> None:
+        """
+        Hook for CREATE_FAILED messages.
+        """
+
+        assert isinstance(server_msg, SmdCommServerCreateFailedMsg)
+
+        ## Remove the sandbox of interest from both the primary sandbox state
+        ## set and the flux sandbox state set.
+        target_flux_sandbox_state: FluxSmdSandboxState | None = None
+        for flux_sandbox_state in self.flux_sandbox_state_set:
+            if flux_sandbox_state.correlation_id == server_msg.correlation_id:
+                target_flux_sandbox_state = flux_sandbox_state
+                break
+        if target_flux_sandbox_state is not None:
+            with SandboxdGlobal.sandbox_state_set_lock:
+                SandboxdGlobal.sandbox_state_set.remove(
+                    target_flux_sandbox_state.state
+                )
+            self.flux_sandbox_state_set.remove(target_flux_sandbox_state)
+        else:
+            logging.critical(
+                "sandboxd lost track of a sandbox, noticed while "
+                + "handling '%s' message",
+                server_msg.name,
+            )
+            sys.exit(1)
+
+    ## TODO: add more server handlers here
 
 
 def bool_to_yn(in_val: bool) -> str:
@@ -908,7 +1012,7 @@ def bool_to_yn(in_val: bool) -> str:
 
 
 def get_messages_for_sandbox_state(
-    sandbox_state: SandboxState, after_failed_config: bool
+    sandbox_state: SmdSandboxState, after_failed_config: bool
 ) -> list[SmdCommServerMsg | SmdCommBidiMsg]:
     """
     Generates a sequence of messages to tell a client about the current config
@@ -935,19 +1039,19 @@ def get_messages_for_sandbox_state(
         case SmdSandboxStatus.CONFIG:
             output_list.append(
                 SmdCommServerConfigInprogressMsg(
-                    main_correlation_id, [sandbox_state.uuid]
+                    main_correlation_id, [sandbox_state.uuid_str]
                 )
             )
         case SmdSandboxStatus.CREATE:
             output_list.append(
                 SmdCommServerCreateInprogressMsg(
-                    main_correlation_id, [sandbox_state.uuid]
+                    main_correlation_id, [sandbox_state.uuid_str]
                 )
             )
         case SmdSandboxStatus.CLONE:
             output_list.append(
                 SmdCommServerCloneInprogressMsg(
-                    main_correlation_id, [sandbox_state.uuid]
+                    main_correlation_id, [sandbox_state.uuid_str]
                 )
             )
         case _:
@@ -1047,37 +1151,37 @@ def get_messages_for_sandbox_state(
             output_list.append(
                 SmdCommServerBootInprogressMsg(
                     new_correlation_id,
-                    [sandbox_state.uuid, "update"],
+                    [sandbox_state.uuid_str, "update"],
                 )
             )
         case SmdSandboxStatus.BOOTING_WORK:
             output_list.append(
                 SmdCommServerBootInprogressMsg(
-                    new_correlation_id, [sandbox_state.uuid, "work"]
+                    new_correlation_id, [sandbox_state.uuid_str, "work"]
                 )
             )
         case SmdSandboxStatus.BOOTED_UPDATE:
             output_list.append(
                 SmdCommServerBootSuccessMsg(
-                    new_correlation_id, [sandbox_state.uuid, "update"]
+                    new_correlation_id, [sandbox_state.uuid_str, "update"]
                 )
             )
         case SmdSandboxStatus.BOOTED_WORK:
             output_list.append(
                 SmdCommServerBootSuccessMsg(
-                    new_correlation_id, [sandbox_state.uuid, "work"]
+                    new_correlation_id, [sandbox_state.uuid_str, "work"]
                 )
             )
         case SmdSandboxStatus.SHUTTING_DOWN:
             output_list.append(
                 SmdCommServerShutdownInprogressMsg(
-                    new_correlation_id, [sandbox_state.uuid]
+                    new_correlation_id, [sandbox_state.uuid_str]
                 )
             )
         case SmdSandboxStatus.DELETE:
             output_list.append(
                 SmdCommServerDeleteInprogressMsg(
-                    new_correlation_id, [sandbox_state.uuid]
+                    new_correlation_id, [sandbox_state.uuid_str]
                 )
             )
         case _:
@@ -1166,41 +1270,59 @@ def populate_state_dir() -> None:
     Creates the state dir and PID file.
     """
 
-    if not SmdCommon.state_dir.exists():
-        try:
-            SmdCommon.state_dir.mkdir(parents=True)
-            SmdCommon.state_dir.chmod(0o755)
-        except Exception as e:
+    ensure_dir_result: SmdEnsureDirResult = SmdCommon.ensure_dir(
+        SmdCommon.state_dir, exists_ok=False
+    )
+    match ensure_dir_result.status:
+        case SmdEnsureDirStatus.SUCCESS:
+            pass
+        case SmdEnsureDirStatus.CREATE_FAIL:
             logging.critical(
                 "Cannot create '%s'",
                 str(SmdCommon.state_dir),
-                exc_info=e,
+                exc_info=ensure_dir_result.error_exc,
             )
             sys.exit(1)
-    else:
-        logging.critical(
-            "Directory '%s' should not exist yet, but does",
-            str(SmdCommon.state_dir),
-        )
-        sys.exit(1)
+        case SmdEnsureDirStatus.CONFLICT:
+            logging.critical(
+                "Path '%s' should not exist yet, but does",
+                str(SmdCommon.state_dir),
+            )
+            sys.exit(1)
+        case SmdEnsureDirStatus.CHMOD_FAIL:
+            logging.critical(
+                "Unreachable code hit trying to ensure the existence of path "
+                + "'%s'",
+                str(SmdCommon.state_dir)
+            )
+            sys.exit(1)
 
-    if not SmdCommon.comm_dir.exists():
-        try:
-            SmdCommon.comm_dir.mkdir(parents=True)
-            SmdCommon.comm_dir.chmod(0o755)
-        except Exception as e:
+    ensure_dir_result = SmdCommon.ensure_dir(
+        SmdCommon.comm_dir, exists_ok=False
+    )
+    match ensure_dir_result:
+        case SmdEnsureDirStatus.SUCCESS:
+            pass
+        case SmdEnsureDirStatus.CREATE_FAIL:
             logging.critical(
                 "Cannot create '%s'",
                 str(SmdCommon.comm_dir),
-                exc_info=e,
+                exc_info=ensure_dir_result.error_exc,
             )
             sys.exit(1)
-    else:
-        logging.critical(
-            "Directory '%s' should not exist yet, but does",
-            str(SmdCommon.comm_dir),
-        )
-        sys.exit(1)
+        case SmdEnsureDirStatus.CONFLICT:
+            logging.critical(
+                "Path '%s' should not exist yet, but does",
+                str(SmdCommon.comm_dir),
+            )
+            sys.exit(1)
+        case SmdEnsureDirStatus.CHMOD_FAIL:
+            logging.critical(
+                "Unreachable code hit trying to ensure the existence of path "
+                + "'%s'",
+                str(SmdCommon.comm_dir),
+            )
+            sys.exit(1)
 
     try:
         with open(
@@ -1239,21 +1361,33 @@ def prepare_sandbox_dir() -> None:
     ownership and permissions.
     """
 
-    if not SmdCommon.sandbox_dir.exists():
-        try:
-            SmdCommon.sandbox_dir.mkdir(parents=True)
-        except Exception as e:
+    ensure_dir_result: SmdEnsureDirResult = SmdCommon.ensure_dir(
+        SmdCommon.sandbox_dir
+    )
+    match ensure_dir_result.status:
+        case SmdEnsureDirStatus.SUCCESS:
+            pass
+        case SmdEnsureDirStatus.CREATE_FAIL:
             logging.critical(
                 "Sandbox dir '%s' does not exist and cannot be created",
                 SmdCommon.sandbox_dir,
-                exc_info=e,
+                exc_info=ensure_dir_result.error_exc,
             )
             sys.exit(1)
-    elif not SmdCommon.sandbox_dir.is_dir():
-        logging.critical(
-            "Sandbox dir '%s' exists but is not a directory",
-            SmdCommon.sandbox_dir,
-        )
+        case SmdEnsureDirStatus.CONFLICT:
+            logging.critical(
+                "Sandbox dir '%s' exists but is not a directory",
+                SmdCommon.sandbox_dir,
+            )
+            sys.exit(1)
+        case SmdEnsureDirStatus.CHMOD_FAIL:
+            logging.critical(
+                "Sandbox dir '%s' exists but permissions could not be "
+                + "hardened",
+                SmdCommon.sandbox_dir,
+                exc_info=ensure_dir_result.error_exc,
+            )
+            sys.exit(1)
 
     stat_info: os.stat_result = os.stat(SmdCommon.sandbox_dir)
     if stat_info.st_uid != 0:
@@ -1395,8 +1529,6 @@ def load_sandbox_config(valid_sandbox_dir_list: list[Path]) -> None:
         ## All the asserts here are just to make mypy happy.
         assert isinstance(config_dict["name"], str)
         assert isinstance(config_dict["description"], str)
-        assert isinstance(config_dict["root_vol_size"], int)
-        assert isinstance(config_dict["data_vol_size"], int)
         assert isinstance(config_dict["memory"], int)
         assert isinstance(config_dict["cpu_weight"], int)
         # assert isinstance(config_dict["cpu_cores"], int)
@@ -1413,27 +1545,58 @@ def load_sandbox_config(valid_sandbox_dir_list: list[Path]) -> None:
             isinstance(x, str) for x in config_dict["shared_device_list"]
         )
 
-        shared_fso_list: list[SharedFsoState] = []
+        shared_fso_list: list[SmdSharedFsoState] = []
         for shared_fso_blob in config_dict["shared_fso_list"]:
             assert isinstance(shared_fso_blob["read_write"], bool)
             assert isinstance(shared_fso_blob["host_path"], str)
             assert isinstance(shared_fso_blob["sandbox_path"], str)
             shared_fso_list.append(
-                SharedFsoState(
+                SmdSharedFsoState(
                     shared_fso_blob["read_write"],
                     shared_fso_blob["host_path"],
                     shared_fso_blob["sandbox_path"],
                 )
             )
 
-        SandboxdGlobal.sandbox_state_list.append(
-            SandboxState(
-                uuid=sandbox_path.name,
+        root_img_path: Path = Path(sandbox_path, SmdCommon.sandbox_root_file)
+        data_img_path: Path = Path(sandbox_path, SmdCommon.sandbox_data_file)
+        try:
+            root_vol_size: int = root_img_path.stat().st_size
+        except Exception as e:
+            logging.warning(
+                "Root image for sandbox at '%s' disappeared?",
+                sandbox_path,
+                exc_info=e,
+            )
+            SandboxdGlobal.damaged_sandbox_set.add(
+                DamagedSandboxInfo(
+                    int(sandbox_path.parent.name),
+                    str(sandbox_path),
+                )
+            )
+        try:
+            data_vol_size: int = data_img_path.stat().st_size
+        except Exception as e:
+            logging.warning(
+                "Data image for sandbox at '%s' disappeared?",
+                sandbox_path,
+                exc_info=e,
+            )
+            SandboxdGlobal.damaged_sandbox_set.add(
+                DamagedSandboxInfo(
+                    int(sandbox_path.parent.name),
+                    str(sandbox_path),
+                )
+            )
+
+        SandboxdGlobal.sandbox_state_set.add(
+            SmdSandboxState(
+                uuid_str=sandbox_path.name,
                 user_id_numeric=int(sandbox_path.parent.name),
                 name=config_dict["name"],
                 description=config_dict["description"],
-                root_vol_size=config_dict["root_vol_size"],
-                data_vol_size=config_dict["data_vol_size"],
+                root_vol_size=root_vol_size,
+                data_vol_size=data_vol_size,
                 memory=config_dict["memory"],
                 cpu_weight=config_dict["cpu_weight"],
                 # cpu_cores=config_dict["cpu_cores"],
