@@ -151,11 +151,11 @@ class FluxSmdSandboxState:
     """
 
     def __init__(
-            self,
-            op_type: FluxSmdSandboxStateType,
-            correlation_id: int,
-            uuid_str: str,
-            user_id_numeric: int
+        self,
+        op_type: FluxSmdSandboxStateType,
+        correlation_id: int,
+        uuid_str: str,
+        user_id_numeric: int,
     ) -> None:
         self.op_type: FluxSmdSandboxStateType = op_type
         self.correlation_id = correlation_id
@@ -203,7 +203,7 @@ class FluxSmdSandboxState:
             nested_sandboxing_enabled=False,
             shared_fso_list=[],
             shared_device_list=[],
-            sandbox_status=sandbox_status
+            sandbox_status=sandbox_status,
         )
 
     def all_options_set(self) -> bool:
@@ -516,7 +516,10 @@ class SandboxdCommThread:
             for handler_pipe_fd in epoll_event_fd_list:
                 source_handler: HandlerProc | None = None
                 for candidate_handler in self.handler_set:
-                    if candidate_handler.parent_pipe.fileno() == handler_pipe_fd:
+                    if (
+                        candidate_handler.parent_pipe.fileno()
+                        == handler_pipe_fd
+                    ):
                         source_handler = candidate_handler
                         break
                 if source_handler is None:
@@ -564,9 +567,9 @@ class SandboxdCommThread:
             raise ConnectionError(
                 f"No handler for message type '{str(type(client_msg))}'"
             )
-        handler_func: Callable[[SmdBaseMsg], None] = (
-            self.message_handler_map[type(client_msg)]
-        )
+        handler_func: Callable[[SmdBaseMsg], None] = self.message_handler_map[
+            type(client_msg)
+        ]
         handler_func(client_msg)
 
     def handler_message_hook(
@@ -579,9 +582,9 @@ class SandboxdCommThread:
 
         if type(msg_from_child) not in self.hook_handler_map:
             return
-        handler_func: Callable[[SmdBaseMsg], None] = (
-            self.hook_handler_map[type(msg_from_child)]
-        )
+        handler_func: Callable[[SmdBaseMsg], None] = self.hook_handler_map[
+            type(msg_from_child)
+        ]
         handler_func(msg_from_child)
 
     def broadcast_message_maybe(
@@ -710,9 +713,7 @@ class SandboxdCommThread:
 
         self.client_is_long_running = True
 
-    def client_query_need_restart_handler(
-        self, client_msg: SmdBaseMsg
-    ) -> None:
+    def client_query_need_restart_handler(self, client_msg: SmdBaseMsg) -> None:
         """
         Handles QUERY_NEED_RESTART messages.
         """
@@ -727,9 +728,7 @@ class SandboxdCommThread:
             SmdCommServerDenyNeedRestartMsg(client_msg.correlation_id)
         )
 
-    def client_restart_handler(
-        self, client_msg: SmdBaseMsg
-    ) -> None:
+    def client_restart_handler(self, client_msg: SmdBaseMsg) -> None:
         """
         Handles RESTART messages.
         """
@@ -768,16 +767,12 @@ class SandboxdCommThread:
 
                 if not should_restart:
                     self.comm_session.send_msg(
-                        SmdCommServerRestartDeniedMsg(
-                            client_msg.correlation_id
-                        )
+                        SmdCommServerRestartDeniedMsg(client_msg.correlation_id)
                     )
                     return
 
                 restart_inprogress_msg: SmdCommServerRestartInprogressMsg = (
-                    SmdCommServerRestartInprogressMsg(
-                        client_msg.correlation_id
-                    )
+                    SmdCommServerRestartInprogressMsg(client_msg.correlation_id)
                 )
                 self.comm_session.send_msg(restart_inprogress_msg)
                 self.broadcast_message_maybe(restart_inprogress_msg)
@@ -840,7 +835,7 @@ class SandboxdCommThread:
                 client_msg.correlation_id,
                 binary_blob="".join(
                     traceback.format_exception(remove_exc)
-                ).encode(encoding="utf-8")
+                ).encode(encoding="utf-8"),
             )
         )
 
@@ -932,7 +927,7 @@ class SandboxdCommThread:
         ## a still-creating sandbox to a correlation ID, and we'll need that
         ## to remove the sandbox from SandboxdGlobal.sandbox_state_set if
         ## creation fails.
-        #self.flux_sandbox_state_set.remove(target_flux_sandbox_state)
+        # self.flux_sandbox_state_set.remove(target_flux_sandbox_state)
         self.epoll_obj.register(
             sandbox_create_proc.parent_pipe.fileno(), select.EPOLLIN
         )
@@ -943,7 +938,6 @@ class SandboxdCommThread:
                 [target_flux_sandbox_state.state.uuid_str],
             )
         )
-
 
     ## TODO: add more client handlers here
 
@@ -1293,7 +1287,7 @@ def populate_state_dir() -> None:
             logging.critical(
                 "Unreachable code hit trying to ensure the existence of path "
                 + "'%s'",
-                str(SmdCommon.state_dir)
+                str(SmdCommon.state_dir),
             )
             sys.exit(1)
 
@@ -1504,9 +1498,7 @@ def load_sandbox_config(valid_sandbox_dir_list: list[Path]) -> None:
     """
 
     for sandbox_path in valid_sandbox_dir_list:
-        config_path: Path = Path(
-            sandbox_path, SmdCommon.sandbox_config_file
-        )
+        config_path: Path = Path(sandbox_path, SmdCommon.sandbox_config_file)
         try:
             config_dict: dict[str, Any] = (
                 strict_config_parser.parse_config_files(
@@ -1838,9 +1830,7 @@ def handle_comm_socket_conn(comm_socket: SmdServerSocket) -> None:
         return
 
     with SandboxdGlobal.session_list_lock:
-        SandboxdGlobal.comm_thread_list.append(
-            SandboxdCommThread(comm_session)
-        )
+        SandboxdGlobal.comm_thread_list.append(SandboxdCommThread(comm_session))
 
 
 def main_loop() -> NoReturn:

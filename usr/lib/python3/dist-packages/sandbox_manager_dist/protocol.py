@@ -358,6 +358,7 @@ class SmdCommClientRestartMsg(
     Asks the server to restart itself.
     """
 
+
 class SmdCommClientDeleteDamagedSandboxesMsg(
     SmdCommClientMsg,
     name="DELETE_DAMAGED_SANDBOXES",
@@ -2474,9 +2475,7 @@ class SmdSession:
                     user_id
                 )
                 if user_id_numeric is None:
-                    raise ValueError(
-                        f"Account '{user_id}' does not exist"
-                    )
+                    raise ValueError(f"Account '{user_id}' does not exist")
                 socket_path = Path(SmdCommon.comm_dir, str(user_id_numeric))
                 if not os.access(socket_path, os.R_OK | os.W_OK):
                     raise PermissionError(
@@ -2763,8 +2762,7 @@ class SmdServerSocket:
         if socket_type == SmdSocketType.CONTROL:
             if user_id is not None:
                 raise ValueError(
-                    "user_id is only valid with "
-                    "SmdSocketType.COMMUNICATION"
+                    "user_id is only valid with SmdSocketType.COMMUNICATION"
                 )
             self.backend_socket = socket.socket(family=socket.AF_UNIX)
             self.socket_path = SmdCommon.control_path
@@ -2779,9 +2777,7 @@ class SmdServerSocket:
                     "SmdSocketType.COMMUNICATION"
                 )
 
-            user_id_numeric: int | None = SmdCommon.normalize_user_id(
-                user_id
-            )
+            user_id_numeric: int | None = SmdCommon.normalize_user_id(user_id)
             if user_id_numeric is None:
                 raise ValueError(f"Account '{user_id}' does not exist")
 

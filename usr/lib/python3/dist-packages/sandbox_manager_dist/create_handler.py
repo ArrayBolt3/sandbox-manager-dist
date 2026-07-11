@@ -58,7 +58,7 @@ def write_sandbox_config(
             }
             for x in sandbox_state.shared_fso_list
         ],
-        "shared_device_list": sandbox_state.shared_device_list
+        "shared_device_list": sandbox_state.shared_device_list,
     }
 
     with open(config_path, "wb") as f:
