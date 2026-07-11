@@ -927,7 +927,6 @@ class SandboxdCommThread:
         ## a still-creating sandbox to a correlation ID, and we'll need that
         ## to remove the sandbox from SandboxdGlobal.sandbox_state_set if
         ## creation fails.
-        # self.flux_sandbox_state_set.remove(target_flux_sandbox_state)
         self.epoll_obj.register(
             sandbox_create_proc.parent_pipe.fileno(), select.EPOLLIN
         )
