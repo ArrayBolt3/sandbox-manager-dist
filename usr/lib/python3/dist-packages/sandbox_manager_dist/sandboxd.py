@@ -947,12 +947,35 @@ class SandboxdCommThread:
             sandbox_create_proc.parent_pipe.fileno(), select.EPOLLIN
         )
         self.handler_set.add(sandbox_create_proc)
-        self.comm_session.send_msg(
+        create_inprogress_msg: SmdCommServerCreateInprogressMsg = (
             SmdCommServerCreateInprogressMsg(
                 client_msg.correlation_id,
                 [target_flux_sandbox_state.state.uuid_str],
             )
         )
+        self.comm_session.send_msg(create_inprogress_msg)
+        self.broadcast_message_maybe(create_inprogress_msg)
+        message_batch: list[SmdCommServerMsg | SmdCommBidiMsg] = (
+            get_messages_for_sandbox_state(
+                target_flux_sandbox_state.state, after_failed_config=False
+            )
+        )
+        for message in message_batch:
+            self.comm_session.send_msg(message)
+            self.broadcast_message_maybe(message)
+
+        ## The final CREATE_SUCCESS or CREATE_FAILED message is sent by the
+        ## create_handler_main process and is forwarded to the client by
+        ## thread_main_loop.
+
+    def client_config_start_handler(self, client_msg: SmdBaseMsg) -> None:
+        """
+        Handles CONFIG_START messages.
+        """
+
+        assert isinstance(client_msg, SmdCommClientConfigStartMsg)
+
+        ## TODO: Implement
 
     ## TODO: add more client handlers here
 
@@ -1143,6 +1166,13 @@ def get_messages_for_sandbox_state(
     Generates a sequence of messages to tell a client about the current config
     state of a sandbox.
     """
+
+    ## FIXME: This function was supposed to include CONFIG_INFO_START and
+    ## CONFIG_INFO_END messages, but doesn't. We'll probably need to add a
+    ## correlation_id argument to this function to make that work, and we may
+    ## need to adjust broadcast_message_maybe to identify what message all
+    ## these messages are being correlated to in order to determine whether to
+    ## broadcast them or not.
 
     output_list: list[SmdCommServerMsg | SmdCommBidiMsg] = []
     main_correlation_id: int = SmdCommon.new_correlation_id()
