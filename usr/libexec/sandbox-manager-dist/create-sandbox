@@ -324,6 +324,13 @@ Signed-By: ${deriv_keyring_path}" \
 
   unprevent_daemons_from_starting
 
+  ## Remove the password from the 'user' account.
+  ## We intentionally do NOT remove the password from the 'root' account,
+  ## since if a sandbox has nested sandboxing *disabled*, 'root' in the
+  ## sandbox will have abilities that non-root users in the sandbox can't
+  ## otherwise obtain.
+  "${chroot_to_image[@]}" /usr/bin/passwd -d user
+
   ## Generate the image expiration time file.
   ## Yes, GNU date actually understands "next week".
   exp_time="$(date --date='next week' +%s)"
