@@ -2236,7 +2236,7 @@ interface directly.
       sandboxing or not. Takes one argument, "y" for "yes", and "n" for "no".
       Does not include a binary blob.
     * `SHARED_FSO` - Specifies a folder or file shared from the host to the
-      sandbox.  Takes three argument; "RW" or "RO" indicating whether the
+      sandbox. Takes three arguments; "RW" or "RO" indicating whether the
       sandbox should be able to write to the file or folder on the host, the
       path of the file or folder on the host, and the path of the file or
       folder within the sandbox. Does not include a binary blob.
