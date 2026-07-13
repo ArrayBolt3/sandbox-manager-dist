@@ -166,6 +166,7 @@ class FluxSmdSandboxState:
             "data_vol_size": False,
             "memory": False,
             "cpu_weight": False,
+            # "cpu_cores": False,
             "io_weight": False,
             "audio_enabled": False,
             "wayland_enabled": False,
@@ -194,6 +195,7 @@ class FluxSmdSandboxState:
             data_vol_size=0,
             memory=0,
             cpu_weight=0,
+            # cpu_cores=0,
             io_weight=0,
             audio_enabled=False,
             wayland_enabled=False,
@@ -423,6 +425,24 @@ class SandboxdCommThread:
             SmdCommClientCreateStartMsg: self.client_create_start_handler,
             SmdCommClientCreateEndMsg: self.client_create_end_handler,
             ## TODO: add more client handlers here
+            SmdCommBidiNameMsg: self.client_bidi_catchall_handler,
+            SmdCommBidiDescriptionMsg: self.client_bidi_catchall_handler,
+            SmdCommBidiRootVolSizeMsg: self.client_bidi_catchall_handler,
+            SmdCommBidiDataVolSizeMsg: self.client_bidi_catchall_handler,
+            SmdCommBidiMemoryMsg: self.client_bidi_catchall_handler,
+            SmdCommBidiCpuWeightMsg: self.client_bidi_catchall_handler,
+            # SmdCommBidiCpuCoresMsg: self.client_bidi_catchall_handler,
+            SmdCommBidiIoWeightMsg: self.client_bidi_catchall_handler,
+            SmdCommBidiAudioEnabledMsg: self.client_bidi_catchall_handler,
+            SmdCommBidiWaylandEnabledMsg: self.client_bidi_catchall_handler,
+            SmdCommBidiX11EnabledMsg: self.client_bidi_catchall_handler,
+            SmdCommBidi3dEnabledMsg: self.client_bidi_catchall_handler,
+            SmdCommBidiNetworkEnabledMsg: self.client_bidi_catchall_handler,
+            SmdCommBidiNestedSandboxingEnabledMsg: (
+                self.client_bidi_catchall_handler
+            ),
+            SmdCommBidiSharedFsoMsg: self.client_bidi_catchall_handler,
+            SmdCommBidiSharedDeviceMsg: self.client_bidi_catchall_handler,
         }
 
         ## Specifies which hook functions correlate to which
@@ -861,10 +881,6 @@ class SandboxdCommThread:
         Handles CREATE_END messages.
         """
 
-        ## TODO: The start and end handlers are written, but we need a bunch
-        ## of handlers for accepting config messages from the client before
-        ## the CREATE_END message is received.
-
         assert isinstance(client_msg, SmdCommClientCreateEndMsg)
 
         target_flux_sandbox_state: FluxSmdSandboxState | None = None
@@ -939,6 +955,122 @@ class SandboxdCommThread:
         )
 
     ## TODO: add more client handlers here
+
+    def client_bidi_catchall_handler(self, client_msg: SmdBaseMsg) -> None:
+        """
+        Handles all client-sent bidi messages.
+        """
+
+        assert isinstance(client_msg, SmdCommBidiMsg)
+        target_flux_sandbox_state: FluxSmdSandboxState | None = None
+
+        for flux_sandbox_state in self.flux_sandbox_state_set:
+            if flux_sandbox_state.correlation_id == client_msg.correlation_id:
+                target_flux_sandbox_state = flux_sandbox_state
+                break
+
+        if target_flux_sandbox_state is None:
+            self.comm_session.send_msg(
+                SmdCommServerBidiUncorrelatedMsg(client_msg.correlation_id)
+            )
+            return
+
+        assert len(client_msg.arg_list) >= 1
+
+        if isinstance(client_msg, SmdCommBidiNameMsg):
+            target_flux_sandbox_state.state.name = client_msg.arg_list[0]
+            target_flux_sandbox_state.set_dict["name"] = True
+        elif isinstance(client_msg, SmdCommBidiDescriptionMsg):
+            target_flux_sandbox_state.state.description = client_msg.arg_list[0]
+            target_flux_sandbox_state.set_dict["description"] = True
+        elif isinstance(client_msg, SmdCommBidiRootVolSizeMsg):
+            target_flux_sandbox_state.state.root_vol_size = int(
+                client_msg.arg_list[0]
+            )
+            target_flux_sandbox_state.set_dict["root_vol_size"] = True
+        elif isinstance(client_msg, SmdCommBidiDataVolSizeMsg):
+            target_flux_sandbox_state.state.data_vol_size = int(
+                client_msg.arg_list[0]
+            )
+            target_flux_sandbox_state.set_dict["data_vol_size"] = True
+        elif isinstance(client_msg, SmdCommBidiMemoryMsg):
+            target_flux_sandbox_state.state.memory = int(client_msg.arg_list[0])
+            target_flux_sandbox_state.set_dict["memory"] = True
+        elif isinstance(client_msg, SmdCommBidiCpuWeightMsg):
+            target_flux_sandbox_state.state.cpu_weight = int(
+                client_msg.arg_list[0]
+            )
+            target_flux_sandbox_state.set_dict["cpu_weight"] = True
+        # elif isinstance(client_msg, SmdCommBidiCpuCoresMsg):
+        #    target_flux_sandbox_state.state.cpu_cores = int(
+        #        client_msg.arg_list[0]
+        #    )
+        #    target_flux_sandbox_state.set_dict["cpu_cores"] = True
+        elif isinstance(client_msg, SmdCommBidiIoWeightMsg):
+            target_flux_sandbox_state.state.io_weight = int(
+                client_msg.arg_list[0]
+            )
+            target_flux_sandbox_state.set_dict["io_weight"] = True
+        elif isinstance(client_msg, SmdCommBidiAudioEnabledMsg):
+            target_flux_sandbox_state.state.audio_enabled = (
+                client_msg.arg_list[0] == "y"
+            )
+            target_flux_sandbox_state.set_dict["audio_enabled"] = True
+        elif isinstance(client_msg, SmdCommBidiWaylandEnabledMsg):
+            target_flux_sandbox_state.state.wayland_enabled = (
+                client_msg.arg_list[0] == "y"
+            )
+            target_flux_sandbox_state.set_dict["wayland_enabled"] = True
+        elif isinstance(client_msg, SmdCommBidiX11EnabledMsg):
+            target_flux_sandbox_state.state.x11_enabled = (
+                client_msg.arg_list[0] == "y"
+            )
+            target_flux_sandbox_state.set_dict["x11_enabled"] = True
+        elif isinstance(client_msg, SmdCommBidi3dEnabledMsg):
+            target_flux_sandbox_state.state.three_d_enabled = (
+                client_msg.arg_list[0] == "y"
+            )
+            target_flux_sandbox_state.set_dict["three_d_enabled"] = True
+        elif isinstance(client_msg, SmdCommBidiNetworkEnabledMsg):
+            target_flux_sandbox_state.state.network_enabled = (
+                client_msg.arg_list[0] == "y"
+            )
+            target_flux_sandbox_state.set_dict["network_enabled"] = True
+        elif isinstance(client_msg, SmdCommBidiNestedSandboxingEnabledMsg):
+            target_flux_sandbox_state.state.nested_sandboxing_enabled = (
+                client_msg.arg_list[0] == "y"
+            )
+            target_flux_sandbox_state.set_dict["nested_sandboxing_enabled"] = (
+                True
+            )
+        elif isinstance(client_msg, SmdCommBidiSharedFsoMsg):
+            assert len(client_msg.arg_list) == 3
+            shared_fso_state = SmdSharedFsoState(
+                read_write=client_msg.arg_list[0] == "RW",
+                host_path=client_msg.arg_list[1],
+                sandbox_path=client_msg.arg_list[2],
+            )
+            ## SECURITY NOTE: We have to ensure that users cannot start
+            ## sandboxes that contain shared files or dirs those users do not
+            ## directly have access to, as this would allow a user to use a
+            ## sandbox to modify arbitrary files on the host. However, we
+            ## cannot check permissions here, as that would allow a user to
+            ## retain access to a directory that was revoked from them later.
+            ## Therefore, we allow any directory to be specified here, and
+            ## instead check permissions on shared filesystem objects during
+            ## sandbox startup.
+            target_flux_sandbox_state.state.shared_fso_list.append(
+                shared_fso_state
+            )
+        elif isinstance(client_msg, SmdCommBidiSharedDeviceMsg):
+            ## SECURITY NOTE: We also can't allow users to pass through
+            ## arbitrary devices; only devices they have access to should be
+            ## allowed, We again can't check permissions now, since a
+            ## particular device path might not refer to the same device at
+            ## sandbox startup time as it refers to now.
+            target_flux_sandbox_state.state.shared_device_list.append(
+                client_msg.arg_list[0]
+            )
 
     def server_create_success_handler(self, server_msg: SmdBaseMsg) -> None:
         """

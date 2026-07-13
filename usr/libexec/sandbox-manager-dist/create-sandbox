@@ -1,0 +1,398 @@
+#!/bin/bash
+
+# Copyright (C) 2026 - 2026 ENCRYPTED SUPPORT LLC <adrelanos@whonix.org>
+# See the file COPYING for copying conditions.
+
+## Creates a new Kicksecure sandbox image of the specified size. Uses a cached
+## base image where possible.
+
+set -x
+set -o errexit
+set -o nounset
+set -o errtrace
+set -o pipefail
+shopt -s inherit_errexit
+shopt -s shift_verbose
+
+# shellcheck source=../../../../helper-scripts/usr/libexec/helper-scripts/log_run_die.sh
+source /usr/libexec/helper-scripts/log_run_die.sh
+# shellcheck source=../../../../helper-scripts/usr/libexec/helper-scripts/strings.bsh
+source /usr/libexec/helper-scripts/strings.bsh
+# shellcheck source=../../../../helper-scripts/usr/libexec/helper-scripts/deb822-extract.bsh
+source /usr/libexec/helper-scripts/deb822-extract.bsh
+
+cache_dir='/var/cache/sandbox-manager-dist'
+cache_image_path="${cache_dir}/smd-base-img.ext4"
+cache_image_exp_path="${cache_dir}/smd-base-img-exp"
+cache_lock_path="${cache_dir}/smd-cache-lock"
+
+min_target_root_size='4294967296' ## 4 GiB
+min_target_data_size='1073741824' ## 1 GiB
+
+deb_mirror_nontorified='https://deb.debian.org/debian'
+deb_mirror_torified="tor+${deb_mirror_nontorified}"
+deb_mirror_onion_base='2s4yqjx5ul6okpp3f2gaunr2syex5jgbfpfvhxxbbjwnrsvbk5v3qbid.onion/debian'
+deb_mirror_onion="tor+http://${deb_mirror_onion_base}"
+deb_mirror_onion_tls="tor+https://${deb_mirror_onion_base}"
+deb_security_mirror_nontorified='https://deb.debian.org/debian-security'
+deb_security_mirror_torified="tor+${deb_security_mirror_nontorified}"
+deb_security_mirror_onion_base='5ajw6aqf3ep7sijnscdzw77t7xq4xjpsy335yb2wiwgouo7yfxtjlmid.onion/debian-security'
+deb_security_mirror_onion="tor+http://${deb_security_mirror_onion_base}"
+deb_security_mirror_onion_tls="tor+https://${deb_security_mirror_onion_base}"
+ks_mirror_nontorified='https://deb.kicksecure.com'
+ks_mirror_torified="tor+${ks_mirror_nontorified}"
+ks_mirror_onion_base='deb.w5j6stm77zs6652pgsij4awcjeel3eco7kvipheu6mtr623eyyehj4yd.onion'
+ks_mirror_onion="tor+http://${ks_mirror_onion_base}"
+ks_mirror_onion_tls="tor+https://${ks_mirror_onion_base}"
+declare -A repository_dist_repo_map
+repository_dist_repo_map["${ks_mirror_nontorified}"]='plain-tls'
+repository_dist_repo_map["${ks_mirror_torified}"]='plain-tls-tor'
+repository_dist_repo_map["${ks_mirror_onion}"]='onion'
+repository_dist_repo_map["${ks_mirror_onion_tls}"]='onion-tls'
+
+deriv_keyring_path='/usr/share/keyrings/derivative.asc'
+
+deb_sources_file='/etc/apt/sources.list.d/debian.sources'
+deriv_sources_file='/etc/apt/sources.list.d/derivative.sources'
+
+bind_dir_list=(
+  '/dev'
+  '/dev/pts'
+  '/proc'
+  '/sys'
+)
+## Ideally we would derive this from the original list, but all the methods of
+## doing so are either hacky or more verbose than just doing it manually. We
+## need the reversed list for unmounting things.
+rev_bind_dir_list=(
+  '/sys'
+  '/proc'
+  '/dev/pts'
+  '/dev'
+)
+
+cache_lock_fd=''
+
+prime_cache_dir() {
+  if ! [ -e "${cache_dir}" ]; then
+    mkdir --parents -- "${cache_dir}"
+  elif ! [ -d "${cache_dir}" ]; then
+    die 1 "'${cache_dir}' is not a directory!"
+  fi
+
+  if ! [ -f "${cache_lock_path}" ]; then
+    touch -- "${cache_lock_path}"
+  fi
+}
+
+open_and_lock_cache() {
+  exec {cache_lock_fd}>"${cache_lock_path}"
+  flock --exclusive -- "${cache_lock_fd}"
+}
+
+unlock_cache() {
+  flock --unlock -- "${cache_lock_fd}"
+}
+
+## Returns 0 if the cached image is present and reusable, 1 if the cached
+## image is absent, outdated, or unusable, 2 if the cache dir path exists but
+## is not a directory.
+##
+## errexit is disabled for this routine because the caller calls it as
+## `check_cached_image || cci_rc="$?"`, so we must do error handling manually
+## here.
+check_cached_image() {
+  local cache_image_exp_int current_time_int
+
+  [ -d "${cache_dir}" ] || return 2
+  [ -f "${cache_image_path}" ] || return 1
+  [ -f "${cache_image_exp_path}" ] || return 1
+
+  cache_image_exp_int="$(cat "${cache_image_exp_path}")" || return 1
+  is_whole_number "${cache_image_exp_int}" || return 1
+  current_time_int="$(date +%s)" || return 1
+  is_whole_number "${current_time_int}" || return 1
+  [ "${cache_image_exp_int}" -gt "${current_time_int}" ] || return 1
+
+  return 0
+}
+
+pick_source_uri() {
+  local sources_file uri_list target_uri
+
+  sources_file="${1:-}"
+  shift
+  uri_list=( "$@" )
+
+  [ -n "${sources_file}" ] || return 1
+  [ "${#uri_list[@]}" -ge 1 ] || return 1
+  [ -n "${uri_list[0]}" ] || return 1
+
+  ## If the sources file doesn't exist, assume we should use the first URI
+  ## provided.
+  if ! [ -f "${sources_file}" ]; then
+    printf '%s\n' "${uri_list[0]}"
+    return 0
+  fi
+
+  ## Check each provided URI in sequence. If the URI is used in the specified
+  ## sources file, use it. If none of the URIs match, fall back to the first
+  ## URI provided.
+  for target_uri in "${uri_list[@]}"; do
+    if grep-dctrl \
+      --field='Types' --pattern='\(^\| \)deb\( \|$\)' --regex \
+      --and --field='URIs' --pattern="^${target_uri}\$" --regex \
+      --and --field='Enabled' --pattern='yes' \
+      "${sources_file}" >/dev/null 2>&1; then
+      printf '%s\n' "${target_uri}"
+      return 0
+    fi
+  done
+
+  printf '%s\n' "${uri_list[0]}"
+  return 0
+}
+
+prevent_daemons_from_starting() {
+  ## Inherits image_mount_dir and chroot_to_image from regen_cached_image.
+  if ! [ -e "${image_mount_dir}/usr/sbin/policy-rc.d.create-sandbox" ]; then
+    cp --preserve --verbose -- '/usr/share/helper-scripts/policy-rc.d' \
+      "${image_mount_dir}/usr/sbin/policy-rc.d.create-sandbox"
+    "${chroot_to_image[@]}" update-alternatives --install \
+      /usr/sbin/policy-rc.d policy-rc.d /usr/sbin/policy-rc.d.create-sandbox \
+      1000
+  fi
+}
+
+unprevent_daemons_from_starting() {
+  ## Inherits image_mount_dir and chroot_to_image from regen_cached_image.
+  if [ -e "${image_mount_dir}/usr/sbin/policy-rc.d.create-sandbox" ]; then
+    "${chroot_to_image[@]}" update-alternatives --remove policy-rc.d \
+      /usr/sbin/policy-rc.d.create-sandbox
+    rm --verbose --force -- \
+      "${image_mount_dir}/usr/sbin/policy-rc.d.create-sandbox"
+  fi
+}
+
+regen_cached_image() {
+  local deb_mirror deb_security_mirror ks_mirror os_codename image_size \
+    image_mount_dir image_loop_device temp_deriv_sources_file \
+    chroot_to_image exp_time bootstrap_deb822_file mmdebstrap_rc bind_dir \
+    reset_tmpdir_env apt_env
+
+  ## Determine what mirrors to use for both bootstrapping and long-term.
+  deb_mirror="$(pick_source_uri "${deb_sources_file}" \
+    "${deb_mirror_torified}" "${deb_mirror_nontorified}" \
+    "${deb_mirror_onion}" "${deb_mirror_onion_tls}")"
+  deb_security_mirror="$(pick_source_uri "${deb_sources_file}" \
+    "${deb_security_mirror_torified}" "${deb_security_mirror_nontorified}" \
+    "${deb_security_mirror_onion}" "${deb_security_mirror_onion_tls}")"
+  ks_mirror="$(pick_source_uri "${deriv_sources_file}" \
+    "${ks_mirror_torified}" "${ks_mirror_nontorified}" \
+    "${ks_mirror_onion}" "${ks_mirror_onion_tls}")"
+  os_codename="$(grep -- '^VERSION_CODENAME=' /etc/os-release \
+    | cut -d'=' -f2)"
+  temp_deriv_sources_file='/etc/apt/sources.list.d/temp-derivative.sources'
+  bootstrap_deb822_file="${cache_dir}/bootstrap-deb822.sources"
+
+  ## Wipe out the old image.
+  safe-rm -f -- "${cache_image_path}"
+  safe-rm -f -- "${cache_image_exp_path}"
+
+  ## Bootstrap the new image.
+  printf '%s\n' "Types: deb
+URIs: ${deb_mirror}
+Suites: ${os_codename} ${os_codename}-updates
+Components: main contrib non-free non-free-firmware
+Enabled: yes
+Signed-By: /usr/share/keyrings/debian-archive-keyring.gpg
+
+Types: deb
+URIs: ${deb_security_mirror}
+Suites: ${os_codename}-security
+Components: main contrib non-free non-free-firmware
+Enabled: yes
+Signed-By: /usr/share/keyrings/debian-archive-keyring.gpg" \
+    | tee -- "${bootstrap_deb822_file}" 2>/dev/null
+  mmdebstrap_rc=0
+  mmdebstrap --variant=standard -- '' "${cache_image_path}" \
+    "${bootstrap_deb822_file}" || mmdebstrap_rc=$?
+  safe-rm -f -- "${bootstrap_deb822_file}"
+  [ "${mmdebstrap_rc}" -eq 0 ] || return "${mmdebstrap_rc}"
+
+  ## Resize the image to the minimum root image size so we have room to add
+  ## Kicksecure's repos.
+  image_size="$(du -b -- "${cache_image_path}" | cut -f1)"
+  is_whole_number "${image_size}" \
+    || die 1 'Reported size of cached image is not an integer!'
+  [ "${image_size}" -lt "${min_target_root_size}" ] \
+    || die 1 "Size of base image created by mmdebstrap exceeds '${min_target_root_size}'!"
+  truncate --size="${min_target_root_size}" -- "${cache_image_path}"
+  e2fsck -f -- "${cache_image_path}"
+  resize2fs -- "${cache_image_path}"
+
+  ## Not sure a nested function is the cleanest way to do this, but it's
+  ## fairly intuitive...
+  cleanup_cached_image_build() {
+    if mountpoint "${image_mount_dir:-}" >/dev/null 2>&1; then
+      for bind_dir in "${rev_bind_dir_list[@]}"; do
+        if mountpoint "${image_mount_dir}${bind_dir}" >/dev/null 2>&1; then
+          umount "${image_mount_dir}${bind_dir}"
+        fi
+      done
+      umount "${image_mount_dir}"
+    fi
+    ## ${image_loop_device is an argument to --detach, therefore not using
+    ## end-of-options.
+    if [ -b "${image_loop_device:-}" ]; then
+      losetup --detach "${image_loop_device}"
+    fi
+    if [ -d "${image_mount_dir:-}" ]; then
+      rmdir -- "${image_mount_dir}"
+    fi
+  }
+  trap cleanup_cached_image_build ERR EXIT
+
+  ## Mount the bootstrapped image.
+  image_mount_dir="$(mktemp --directory)"
+  ## ${cache_image_path} is an argument to --find, therefore not using
+  ## end-of-options.
+  image_loop_device="$(losetup --show --find "${cache_image_path}")"
+  mount -- "${image_loop_device}" "${image_mount_dir}"
+
+  ## Add the Kicksecure repository.
+  cp "${deriv_keyring_path}" "${image_mount_dir}/${deriv_keyring_path}"
+  printf '%s\n' "Types: deb
+URIs: ${ks_mirror}
+Suites: ${os_codename}
+Components: main contrib non-free
+Signed-By: ${deriv_keyring_path}" \
+    | tee "${image_mount_dir}${temp_deriv_sources_file}" >/dev/null
+
+  ## Enable network access when using chroot.
+  mv "${image_mount_dir}/etc/resolv.conf" "${image_mount_dir}/etc/resolv.conf.bak"
+  cp '/etc/resolv.conf' "${image_mount_dir}/etc/resolv.conf"
+
+  ## Bind-mount needed dirs into the chroot.
+  for bind_dir in "${bind_dir_list[@]}"; do
+    mount --bind -- "${bind_dir}" "${image_mount_dir}${bind_dir}"
+  done
+
+  ## Install the Kicksecure CLI metapackage for VMs. This is a container, not
+  ## a VM, but the VM image works.
+  chroot_to_image=( 'chroot' "${image_mount_dir}" )
+  reset_tmpdir_env=(
+    'TMPDIR=/tmp'
+    'TMP=/tmp'
+    'TEMPDIR=/tmp'
+    'TEMP=/tmp'
+  )
+  apt_env=(
+    'DEBIAN_FRONTEND=noninteractive'
+    'SECURITY_MISC_INSTALL=force'
+    "${reset_tmpdir_env[@]}"
+  )
+
+  prevent_daemons_from_starting
+
+  "${chroot_to_image[@]}" /usr/bin/apt-get --yes --error-on=any update
+  "${chroot_to_image[@]}" /usr/bin/env "${apt_env[@]}" \
+    /usr/bin/apt-get --yes --no-install-recommends full-upgrade
+  "${chroot_to_image[@]}" /usr/bin/env "${apt_env[@]}" \
+    /usr/bin/apt-get --yes \
+    --no-install-recommends install kicksecure-vm-cli
+
+  ## Set up apt sources as they should be for the final image, then
+  ## full-upgrade the image again for good measure.
+  "${chroot_to_image[@]}" /usr/bin/rm --force -- /etc/apt/sources.list
+  "${chroot_to_image[@]}" /usr/bin/rm --force -- "${temp_deriv_sources_file}"
+  "${chroot_to_image[@]}" /usr/bin/env "${reset_tmpdir_env[@]}" \
+    /usr/bin/repository-dist --enable --repository stable \
+    --transport "${repository_dist_repo_map["${ks_mirror}"]}"
+  if ! [ "${deb_mirror}" = "${deb_mirror_torified}" ]; then
+    sed -i "s?^URIs: ${deb_mirror_torified}\$?URIs: ${deb_mirror}?g" \
+      "${image_mount_dir}${deb_sources_file}"
+  fi
+  if ! [ "${deb_security_mirror}" = "${deb_security_mirror_torified}" ]; then
+    sed -i \
+      "s?^URIs: ${deb_security_mirror_torified}\$?URIs: ${deb_security_mirror}?g" \
+      "${image_mount_dir}${deb_sources_file}"
+  fi
+  "${chroot_to_image[@]}" /usr/bin/apt-get --yes --error-on=any update
+  "${chroot_to_image[@]}" /usr/bin/env "${apt_env[@]}" \
+    /usr/bin/apt-get --yes --no-install-recommends full-upgrade
+
+  unprevent_daemons_from_starting
+
+  ## Generate the image expiration time file.
+  ## Yes, GNU date actually understands "next week".
+  exp_time="$(date --date='next week' +%s)"
+  is_whole_number "${exp_time}" \
+    || die 1 "'date' malfunctioned and did not return a UNIX timestamp"
+  printf '%s\n' "${exp_time}" | tee "${cache_image_exp_path}" 2>/dev/null
+
+  ## Unmount the image and clean up.
+  trap '' ERR EXIT
+  cleanup_cached_image_build
+}
+
+smd_create_sandbox() {
+  local target_sandbox_path target_root_name target_data_name \
+    target_root_size target_data_size cci_rc target_root_path target_data_path
+
+  ## Load and validate arguments.
+  target_sandbox_path="${1:-}"
+  target_root_name="${2:-}"
+  target_data_name="${3:-}"
+  target_root_size="${4:-}"
+  target_data_size="${5:-}"
+  [ -n "${target_sandbox_path}" ] || die 1 'No target sandbox path provided!'
+  ! [ -d "${target_sandbox_path}" ] \
+    && die 1 'Target sandbox path does not exist or is not a directory!'
+  [ -n "${target_root_name}" ] || die 1 'No target root image name provided!'
+  [ -n "${target_data_name}" ] || die 1 'No target data image name provided!'
+  [ -n "${target_root_size}" ] || die 1 'No target root size provided!'
+  [ -n "${target_data_size}" ] || die 1 'No target data size provided!'
+  is_whole_number "${target_root_size}" \
+    || die 1 'Target root size is not a whole number!'
+  is_whole_number "${target_data_size}" \
+    || die 1 'Target data size is not a while number!'
+  [ "${target_root_size}" -ge "${min_target_root_size}" ] \
+    || die 1 "Target root size '${target_root_size}' is smaller than minimum target root size '${min_target_root_size}'!"
+  [ "${target_data_size}" -ge "${min_target_data_size}" ] \
+    || die 1 "Target data size '${target_data_size}' is smaller than minimum target data size '${min_target_data_size}'!"
+  target_root_path="${target_sandbox_path}/${target_root_name}"
+  target_data_path="${target_sandbox_path}/${target_data_name}"
+
+  prime_cache_dir
+  open_and_lock_cache
+
+  ## Check the cached image and regenerate it if needed.
+  cci_rc=0
+  check_cached_image || cci_rc=$?
+  if [ "${cci_rc}" -eq 2 ]; then
+    die 1 "'${cache_dir}' does not exist or is not a directory!"
+  elif [ "${cci_rc}" -eq 1 ]; then
+    regen_cached_image
+  elif [ "${cci_rc}" -ne 0 ]; then
+    die 1 "Unknown error while checking the cached image!"
+  fi
+
+  ## Copy the cached image to the sandbox path and prepare it.
+  mkdir --parents -- "${target_sandbox_path}"
+  cp "${cache_image_path}" "${target_root_path}"
+
+  unlock_cache
+
+  if [ "${target_root_size}" -gt "${min_target_root_size}" ]; then
+    truncate --size="${target_root_size}" -- "${target_root_path}"
+    e2fsck -f -- "${target_root_path}"
+    resize2fs -- "${target_root_path}"
+  fi
+
+  ## Create the data image.
+  truncate --size="${target_data_size}" -- "${target_data_path}"
+  mke2fs -t ext4 -- "${target_data_path}"
+}
+
+smd_create_sandbox "$@"

@@ -136,8 +136,8 @@ class SmdCommon:
 
     state_dir: Path = Path("/run/sandbox-manager-dist")
     sandbox_dir: Path = Path("/home/sandbox-manager-dist")
-    sandbox_root_file: str = "root.img"
-    sandbox_data_file: str = "data.img"
+    sandbox_root_file: str = "root.ext4"
+    sandbox_data_file: str = "data.ext4"
     sandbox_config_file: str = "config"
     control_path: Path = Path(state_dir, "control")
     comm_dir: Path = Path(state_dir, "comm")

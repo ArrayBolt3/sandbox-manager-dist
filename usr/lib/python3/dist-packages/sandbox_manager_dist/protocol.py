@@ -1033,6 +1033,18 @@ class SmdCommServerFsoExistsMsg(
     """
 
 
+class SmdCommServerBidiUncorrelatedMsg(
+    SmdCommServerMsg,
+    name="BIDI_UNCORRELATED",
+    arg_count=0,
+    trailing_binary=False,
+    do_broadcast=False,
+):
+    """
+    Informs the client that it sent a bidi message with a bad correlation ID.
+    """
+
+
 class SmdCommServerDamagedSandboxesStartMsg(
     SmdCommServerMsg,
     name="DAMAGED_SANDBOXES_START",

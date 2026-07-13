@@ -11,6 +11,7 @@ create_handler.py - Creates sandboxes.
 
 import os
 import shutil
+import subprocess
 from multiprocessing.connection import Connection
 from pathlib import Path
 from typing import Any
@@ -73,7 +74,17 @@ def bootstrap_sandbox_disk_images(
     Kicksecure CLI to the root image.
     """
 
-    ## TODO: Implement
+    subprocess.run(
+        [
+            "/usr/libexec/sandbox-manager-dist/create-sandbox",
+            user_sandbox_dir,
+            SmdCommon.sandbox_root_file,
+            SmdCommon.sandbox_data_file,
+            str(sandbox_state.root_vol_size),
+            str(sandbox_state.data_vol_size),
+        ],
+        check=True,
+    )
 
 
 def create_handler_main(child_pipe: Connection) -> None:
@@ -101,9 +112,6 @@ def create_handler_main(child_pipe: Connection) -> None:
         return
     assert isinstance(recv_obj, SmdSandboxState)
     sandbox_state: SmdSandboxState = recv_obj
-
-    ## TODO: Should we double-check that the UID we're creating a sandbox for
-    ## exists? sandboxd shouldn't ever send us a bogus UID...
 
     user_id: str = str(sandbox_state.user_id_numeric)
     user_sandbox_repo: Path = Path(SmdCommon.sandbox_dir, user_id)

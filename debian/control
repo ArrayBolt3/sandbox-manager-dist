@@ -16,10 +16,12 @@ Rules-Requires-Root: no
 ## files. See https://docs.python.org/3/library/tomllib.html.
 Package: sandbox-manager-dist
 Architecture: all
-Depends: mmdebstrap,
+Depends: dctrl-tools,
+         mmdebstrap,
          python3,
          python3-schema,
          python3-tomli-w,
+         repository-dist,
          helper-scripts,
          systemd-container,
          ${misc:Depends}

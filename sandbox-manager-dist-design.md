@@ -1904,6 +1904,11 @@ interface directly.
       already exists. Must be correlated to a client-sent `CREATE_FILE_BEGIN`
       or `CREATE_DIR` message. Takes no arguments. Does not include a binary
       blob.
+    * `BIDI_UNCORRELATED` - Informs the frontend that it has sent a bidi
+      message with a correlation ID not matching any outstanding
+      `CREATE_START` or `CONFIG_START` message. Must be correlated to the
+      problematic bidi message. Takes no arguments. Does not include a binary
+      blob.
     * `DAMAGED_SANDBOXES_START` - Informs the frontend that damaged sandboxes
       belonging to its user account are present. Introduces a new correlation
       ID. Takes no arguments. Does not include a binary blob.
