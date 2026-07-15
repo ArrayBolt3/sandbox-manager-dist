@@ -700,7 +700,9 @@ class SandboxdCommThread:
         for sandbox_state in sandbox_state_copy:
             message_batch: list[SmdCommServerMsg | SmdCommBidiMsg] = (
                 get_messages_for_sandbox_state(
-                    sandbox_state, after_failed_config=False
+                    SmdCommon.new_correlation_id(),
+                    sandbox_state,
+                    after_failed_config=False,
                 )
             )
             for message in message_batch:
@@ -957,7 +959,9 @@ class SandboxdCommThread:
         self.broadcast_message_maybe(create_inprogress_msg)
         message_batch: list[SmdCommServerMsg | SmdCommBidiMsg] = (
             get_messages_for_sandbox_state(
-                target_flux_sandbox_state.state, after_failed_config=False
+                client_msg.correlation_id,
+                target_flux_sandbox_state.state,
+                after_failed_config=False,
             )
         )
         for message in message_batch:
@@ -1160,22 +1164,16 @@ def bool_to_yn(in_val: bool) -> str:
 
 
 def get_messages_for_sandbox_state(
-    sandbox_state: SmdSandboxState, after_failed_config: bool
+    main_correlation_id: int,
+    sandbox_state: SmdSandboxState,
+    after_failed_config: bool,
 ) -> list[SmdCommServerMsg | SmdCommBidiMsg]:
     """
     Generates a sequence of messages to tell a client about the current config
     state of a sandbox.
     """
 
-    ## FIXME: This function was supposed to include CONFIG_INFO_START and
-    ## CONFIG_INFO_END messages, but doesn't. We'll probably need to add a
-    ## correlation_id argument to this function to make that work, and we may
-    ## need to adjust broadcast_message_maybe to identify what message all
-    ## these messages are being correlated to in order to determine whether to
-    ## broadcast them or not.
-
     output_list: list[SmdCommServerMsg | SmdCommBidiMsg] = []
-    main_correlation_id: int = SmdCommon.new_correlation_id()
 
     if (
         sandbox_state.sandbox_status != SmdSandboxStatus.SHUT_DOWN
@@ -1215,6 +1213,11 @@ def get_messages_for_sandbox_state(
     if after_failed_config:
         output_list.append(SmdCommServerConfigFailedMsg(main_correlation_id))
 
+    output_list.append(
+        SmdCommServerConfigInfoStartMsg(
+            main_correlation_id, [sandbox_state.uuid_str]
+        )
+    )
     output_list.append(
         SmdCommBidiNameMsg(main_correlation_id, [sandbox_state.name])
     )
@@ -1295,6 +1298,7 @@ def get_messages_for_sandbox_state(
         output_list.append(
             SmdCommBidiSharedDeviceMsg(main_correlation_id, [shared_device])
         )
+    output_list.append(SmdCommServerConfigInfoEndMsg(main_correlation_id))
 
     ## Trailing messages; these are sent after config info for the same reason
     ## leading messages are sent before. SmdSandboxStatus.SHUT_DOWN is not
