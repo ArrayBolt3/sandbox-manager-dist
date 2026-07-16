@@ -424,6 +424,8 @@ class SandboxdCommThread:
             ),
             SmdCommClientCreateStartMsg: self.client_create_start_handler,
             SmdCommClientCreateEndMsg: self.client_create_end_handler,
+            SmdCommClientConfigStartMsg: self.client_config_start_handler,
+            SmdCommClientConfigEndMsg: self.client_config_end_handler,
             ## TODO: add more client handlers here
             SmdCommBidiNameMsg: self.client_bidi_catchall_handler,
             SmdCommBidiDescriptionMsg: self.client_bidi_catchall_handler,
@@ -978,6 +980,63 @@ class SandboxdCommThread:
         """
 
         assert isinstance(client_msg, SmdCommClientConfigStartMsg)
+        assert self.comm_session.user_id_numeric is not None
+
+        ## Always refuse to delete a sandbox that is mid-configure, and always
+        ## refuse to start configuring a sandbox that is being deleted.
+        ##
+        ## TODO: Move this comment to the handler for DELETE messages once
+        ## that handler exists.
+
+        target_sandbox_state: SmdSandboxState | None = None
+        with SandboxdGlobal.sandbox_state_set_lock:
+            for sandbox_state in SandboxdGlobal.sandbox_state_set:
+                if (
+                    sandbox_state.user_id_numeric
+                    != self.comm_session.user_id_numeric
+                ):
+                    continue
+                if sandbox_state.uuid_str == client_msg.arg_list[0]:
+                    target_sandbox_state = sandbox_state
+                    break
+            if target_sandbox_state is None:
+                self.comm_session.send_msg(
+                    SmdCommServerSandboxMissingMsg(
+                        correlation_id=client_msg.correlation_id
+                    )
+                )
+                return
+            if is_sandbox_running(target_sandbox_state):
+                self.comm_session.send_msg(
+                    SmdCommServerSandboxRunningMsg(
+                        correlation_id=client_msg.correlation_id
+                    )
+                )
+                return
+            if is_sandbox_busy(target_sandbox_state):
+                self.comm_session.send_msg(
+                    SmdCommServerSandboxBusyMsg(
+                        correlation_id=client_msg.correlation_id
+                    )
+                )
+                return
+
+        self.flux_sandbox_state_set.add(
+            FluxSmdSandboxState(
+                op_type=FluxSmdSandboxStateType.CONFIG,
+                correlation_id=client_msg.correlation_id,
+                uuid_str=target_sandbox_state.uuid_str,
+                user_id_numeric=self.comm_session.user_id_numeric,
+            )
+        )
+
+    def client_config_end_handler(self, client_msg: SmdBaseMsg) -> None:
+        """
+        Handles CONFIG_END messages.
+        """
+
+        assert isinstance(client_msg, SmdCommClientConfigEndMsg)
+        assert self.comm_session.user_id_numeric is not None
 
         ## TODO: Implement
 
@@ -1347,6 +1406,38 @@ def get_messages_for_sandbox_state(
             pass
 
     return output_list
+
+
+def is_sandbox_running(sandbox_state: SmdSandboxState) -> bool:
+    """
+    Checks if the sandbox state indicates that the sandbox is running.
+    """
+
+    if sandbox_state.sandbox_status in (
+        SmdSandboxStatus.BOOTING_UPDATE,
+        SmdSandboxStatus.BOOTING_WORK,
+        SmdSandboxStatus.BOOTED_UPDATE,
+        SmdSandboxStatus.BOOTED_WORK,
+        SmdSandboxStatus.SHUTTING_DOWN,
+    ):
+        return True
+    return False
+
+
+def is_sandbox_busy(sandbox_state: SmdSandboxState) -> bool:
+    """
+    Checks if the sandbox state indicates that the sandbox is busy.
+    """
+
+    if sandbox_state.sandbox_status in (
+        SmdSandboxStatus.CONFIG,
+        SmdSandboxStatus.CREATE,
+        SmdSandboxStatus.DELETE,
+        SmdSandboxStatus.CLONE,
+        SmdSandboxStatus.CLONING,
+    ):
+        return True
+    return False
 
 
 def ensure_running_as_root() -> None:

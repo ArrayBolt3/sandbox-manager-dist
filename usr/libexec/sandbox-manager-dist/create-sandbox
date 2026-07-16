@@ -175,7 +175,7 @@ unprevent_daemons_from_starting() {
 }
 
 regen_cached_image() {
-  local deb_mirror deb_security_mirror ks_mirror os_codename image_size \
+  local deb_mirror deb_security_mirror ks_mirror os_codename \
     image_mount_dir image_loop_device temp_deriv_sources_file \
     chroot_to_image exp_time bootstrap_deb822_file mmdebstrap_rc bind_dir \
     reset_tmpdir_env apt_env
@@ -200,6 +200,7 @@ regen_cached_image() {
   safe-rm -f -- "${cache_image_exp_path}"
 
   ## Bootstrap the new image.
+  truncate --size="${min_target_root_size}" -- "${cache_image_path}"
   printf '%s\n' "Types: deb
 URIs: ${deb_mirror}
 Suites: ${os_codename} ${os_codename}-updates
@@ -215,21 +216,11 @@ Enabled: yes
 Signed-By: /usr/share/keyrings/debian-archive-keyring.gpg" \
     | tee -- "${bootstrap_deb822_file}" 2>/dev/null
   mmdebstrap_rc=0
-  mmdebstrap --variant=standard -- '' "${cache_image_path}" \
-    "${bootstrap_deb822_file}" || mmdebstrap_rc=$?
+  mmdebstrap --variant=standard --include=apt-transport-tor \
+    -- '' - "${bootstrap_deb822_file}" | mke2fs -t ext4 -b 4096 -d - \
+    -- "${cache_image_path}" || mmdebstrap_rc=$?
   safe-rm -f -- "${bootstrap_deb822_file}"
   [ "${mmdebstrap_rc}" -eq 0 ] || return "${mmdebstrap_rc}"
-
-  ## Resize the image to the minimum root image size so we have room to add
-  ## Kicksecure's repos.
-  image_size="$(du -b -- "${cache_image_path}" | cut -f1)"
-  is_whole_number "${image_size}" \
-    || die 1 'Reported size of cached image is not an integer!'
-  [ "${image_size}" -lt "${min_target_root_size}" ] \
-    || die 1 "Size of base image created by mmdebstrap exceeds '${min_target_root_size}'!"
-  truncate --size="${min_target_root_size}" -- "${cache_image_path}"
-  e2fsck -f -- "${cache_image_path}"
-  resize2fs -- "${cache_image_path}"
 
   ## Not sure a nested function is the cleanest way to do this, but it's
   ## fairly intuitive...
@@ -288,8 +279,20 @@ Signed-By: ${deriv_keyring_path}" \
     'TEMP=/tmp'
   )
   apt_env=(
+    ## Suppresses debconf prompts.
     'DEBIAN_FRONTEND=noninteractive'
+
+    ## Prevents security-misc installation from bombing out if the 'user'
+    ## account isn't created before security-misc gets configures.
     'SECURITY_MISC_INSTALL=force'
+
+    ## displays verbose debugging info in Kicksecure package postinst scripts.
+    'DEBDEBUG=1'
+
+    ## Needed to make Kicksecure package maintainer scripts take actions (like
+    ## creating the 'user' account) that are only permitted during image
+    ## builds.
+    'derivative_maker=true'
     "${reset_tmpdir_env[@]}"
   )
 
@@ -399,7 +402,7 @@ smd_create_sandbox() {
 
   ## Create the data image.
   truncate --size="${target_data_size}" -- "${target_data_path}"
-  mke2fs -t ext4 -- "${target_data_path}"
+  mke2fs -t ext4 -b 4096 -- "${target_data_path}"
 }
 
 smd_create_sandbox "$@"

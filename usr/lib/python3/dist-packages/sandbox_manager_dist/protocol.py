@@ -982,6 +982,19 @@ class SmdCommServerSandboxNotRunningMsg(
     """
 
 
+class SmdCommServerSandboxBusyMsg(
+    SmdCommServerMsg,
+    name="SANDBOX_BUSY",
+    arg_count=0,
+    trailing_binary=False,
+    do_broadcast=False,
+):
+    """
+    Informs the client that a requested operation could nto be performed
+    because the target sandbox is busy.
+    """
+
+
 class SmdCommServerSandboxMissingMsg(
     SmdCommServerMsg,
     name="SANDBOX_MISSING",

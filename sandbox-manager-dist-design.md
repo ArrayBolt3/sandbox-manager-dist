@@ -358,7 +358,7 @@ will be "(shutting down)" instead.
 
 ```
 * All buttons in the sidebar, the sandbox list, and the top bar are grayed
-  out, except for "Apply".
+  out, except for "Apply" and "Cancel".
 * All UI elements in the configuration pane become accessible.
 
 +-------------------------------------------------------------------------------------------+
@@ -485,6 +485,11 @@ will be "(shutting down)" instead.
 
 * UI is the same as Sandboxes screen (config mode), except for it says
   "(clone)" rather than "(config)".
+
+## Sandboxes screen (cloning mode)
+
+* UI is the same as Sandboxes screen (config mode), except for it says
+  "(cloning)" rather than "(config)".
 
 ## Applications screen (running sandbox in work mode selected, unpinned app selected)
 
@@ -682,13 +687,15 @@ displayed.
 ```
 
 * Clicking "Clone" tells the backend to clone a sandbox and freezes the UI.
-  * If the source sandbox exists, is powered off, and the name of the new
-    sandbox is unique, the backend sends back info that adds a Clone Sandbox
-    job. Once that happens, the window closes.
+  * If the source sandbox exists, is powered off, is not busy, and the name of
+    the new sandbox is unique, the backend sends back info that adds a Clone
+    Sandbox job. Once that happens, the window closes.
   * If the source sandbox does not exist, the backend informs the frontend of
     this. A Sandbox Not Found screen opens in a new window.
   * If the source sandbox is powered on, the backend informs the frontend of
     this. A Sandbox Already Running screen opens in a new window.
+  * If the source sandbox is busy, the backend informs the frontend of this. A
+    Sandbox Busy screen opens in a new window.
   * If the new sandbox name is not unique, the backend informs the frontend of
     this. A Duplicate Sandbox Name screen opens in a new window.
 * If the source sandbox's state changes, the window abruptly closes and the UI
@@ -995,6 +1002,22 @@ displayed.
 |                                                                      |
 |                                                                 <OK> |
 +----------------------------------------------------------------------+
+```
+
+* Clicking "OK" closes the window.
+
+## Sandbox Busy screen
+
+```
++------------------------------------------------------------+
+| @ Sandbox Busy - Sandbox Manager                     v ^ X |
++------------------------------------------------------------+
+| The sandbox "Element" cannot be reconfigured at this time! |
+| Look and the sandbox's entry in the sandbox list for more  |
+| information.                                               |
+|                                                            |
+|                                                       <OK> |
++------------------------------------------------------------+
 ```
 
 * Clicking "OK" closes the window.
@@ -1881,13 +1904,17 @@ interface directly.
       client-sent `CREATE_END`, `CONFIG_END`, or `CLONE` message. Takes no
       arguments. Does not include a binary blob.
     * `SANDBOX_RUNNING` - Informs the frontend that a sandbox is already
-      running. Must be correlated to a client-sent `CONFIG_END`, `DELETE`,
-      `CLONE`, or `BOOT` message. Takes no arguments. Does not include a binary
-      blob.
+      running. Must be correlated to a client-sent `CONFIG_START`,
+      `CONFIG_END`, `DELETE`, `CLONE`, or `BOOT` message. Takes no arguments.
+      Does not include a binary blob.
     * `SANDBOX_NOT_RUNNING` - Informs the frontend that a sandbox is not
       running. Must be correlated to a `SHUTDOWN`, `CREATE_FILE_BEGIN`,
       `CREATE_DIR`, `LIST_DIR`, `READ_FILE`, `LIST_APPS`, `GET_APP_INFO`,
       `EXEC`, or `SHELL` message.
+    * `SANDBOX_BUSY` - Informs the frontend that a sandbox cannot be modified
+      or booted because it is busy. Must be correlated to a client-sent
+      `CONFIG_START`, `CONFIG_END`, `DELETE`, `CLONE`, or `BOOT` message.
+      Takes no arguments. Does not include a binary blob.
     * `SANDBOX_MISSING` - Informs the frontend that a sandbox cannot be found.
       Must be correlated to a client-sent message that refers to an existing
       sandbox (there are too many of these to enumerate easily here). Takes no

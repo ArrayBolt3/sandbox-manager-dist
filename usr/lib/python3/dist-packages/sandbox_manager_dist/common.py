@@ -69,6 +69,7 @@ class SmdSandboxStatus(Enum):
     CREATE = 8
     DELETE = 9
     CLONE = 10
+    CLONING = 11
 
 
 # pylint: disable=too-many-instance-attributes
