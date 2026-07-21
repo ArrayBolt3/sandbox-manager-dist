@@ -15,8 +15,10 @@ import pwd
 import secrets
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable
+from typing import Any, Callable
 from enum import Enum
+
+import tomli_w
 
 
 class SmdValidateType(Enum):
@@ -40,6 +42,8 @@ class SmdValidateType(Enum):
     YN_BOOL = 13
     WRITE_STATUS = 14
     DEVICE_PATH = 15
+    ROOT_VOL_SIZE = 16
+    DATA_VOL_SIZE = 17
 
 
 @dataclass
@@ -161,6 +165,8 @@ class SmdCommon:
     yn_bool_regex: re.Pattern[str] = re.compile(r"(y|n)\Z")
     write_status_regex: re.Pattern[str] = re.compile(r"(RW|RO)\Z")
     max_vol_size: int = (16 * 1024 * 1024 * 1024 * 1024) - 4096
+    min_root_vol_size: int = 4 * 1024 * 1024 * 1024
+    min_data_vol_size: int = 1024 * 1024 * 1024
     max_mem_size: int = 1024 * 1024 * 1024 * 1024
     max_cpu_weight: int = 10000
     max_io_weight: int = 10000
@@ -183,8 +189,6 @@ class SmdCommon:
 
         for validate_type in validate_arr:
             target_regex: re.Pattern[str] | None = None
-            ## FIXME: func_handler is unused, remove it if we don't end up with
-            ## a use for it later
             func_handler: Callable[[str], bool] | None = None
             match validate_type:
                 case SmdValidateType.USER_NAME:
@@ -217,8 +221,13 @@ class SmdCommon:
                     target_regex = SmdCommon.yn_bool_regex
                 case SmdValidateType.WRITE_STATUS:
                     target_regex = SmdCommon.write_status_regex
+                case SmdValidateType.ROOT_VOL_SIZE:
+                    func_handler = SmdCommon.validate_root_vol_size
+                case SmdValidateType.DATA_VOL_SIZE:
+                    func_handler = SmdCommon.validate_data_vol_size
 
             if func_handler is None:
+                assert target_regex is not None
                 if target_regex.match(id_string):
                     validation_passed = True
                     break
@@ -229,6 +238,45 @@ class SmdCommon:
 
         if not validation_passed:
             raise ValueError(err_str)
+
+    @staticmethod
+    def validate_vol_size(size_str: str, min_size: int) -> bool:
+        """
+        Validates that a volume size string is numeric, falls within the volume
+        size bounds, and is evenly divisible by 4096.
+        """
+
+        try:
+            size_int: int = int(size_str)
+        except Exception:
+            return False
+
+        if (
+            min_size <= size_int <= SmdCommon.max_vol_size
+            and size_int % 4096 == 0
+        ):
+            return True
+        return False
+
+    @staticmethod
+    def validate_root_vol_size(size_str: str) -> bool:
+        """
+        Runs validate_vol_size with the minimum root vol size.
+        """
+
+        return SmdCommon.validate_vol_size(
+            size_str, SmdCommon.min_root_vol_size
+        )
+
+    @staticmethod
+    def validate_data_vol_size(size_str: str) -> bool:
+        """
+        Runs validate_vol_size with the minimum data vol size.
+        """
+
+        return SmdCommon.validate_vol_size(
+            size_str, SmdCommon.min_data_vol_size
+        )
 
     @staticmethod
     def normalize_user_id(user_id: str) -> int | None:
@@ -289,3 +337,40 @@ class SmdCommon:
             except Exception as e:
                 return SmdEnsureDirResult(SmdEnsureDirStatus.CHMOD_FAIL, e)
         return SmdEnsureDirResult(SmdEnsureDirStatus.SUCCESS, None)
+
+    @staticmethod
+    def write_sandbox_config(
+        config_path: Path, sandbox_state: SmdSandboxState
+    ) -> None:
+        """
+        Converts the part of sandbox_state that contains configuration data
+        into TOML, and writes it to a file.
+        """
+
+        conf_dict: dict[str, Any] = {
+            "name": sandbox_state.name,
+            "description": sandbox_state.description,
+            "memory": sandbox_state.memory,
+            "cpu_weight": sandbox_state.cpu_weight,
+            "io_weight": sandbox_state.io_weight,
+            "audio_enabled": sandbox_state.audio_enabled,
+            "wayland_enabled": sandbox_state.wayland_enabled,
+            "x11_enabled": sandbox_state.x11_enabled,
+            "three_d_enabled": sandbox_state.three_d_enabled,
+            "network_enabled": sandbox_state.network_enabled,
+            "nested_sandboxing_enabled": (
+                sandbox_state.nested_sandboxing_enabled
+            ),
+            "shared_fso_list": [
+                {
+                    "read_write": x.read_write,
+                    "host_path": x.host_path,
+                    "sandbox_path": x.sandbox_path,
+                }
+                for x in sandbox_state.shared_fso_list
+            ],
+            "shared_device_list": sandbox_state.shared_device_list,
+        }
+
+        with open(config_path, "wb") as f:
+            tomli_w.dump(conf_dict, f)

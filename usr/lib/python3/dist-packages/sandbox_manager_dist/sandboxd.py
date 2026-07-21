@@ -45,6 +45,7 @@ from .protocol import *
 
 from .nspawn_manager import nspawn_manager_main
 from .create_handler import create_handler_main
+from .config_handler import config_handler_main
 
 
 # pylint: disable=too-few-public-methods
@@ -159,6 +160,12 @@ class FluxSmdSandboxState:
     ) -> None:
         self.op_type: FluxSmdSandboxStateType = op_type
         self.correlation_id = correlation_id
+
+        ## When "locked" set to True, no further config changes may be made.
+        ## This MUST be obeyed, since multiple threads may be using self.state
+        ## at this point.
+        self.locked: bool = False
+
         self.set_dict: dict[str, bool] = {
             "name": False,
             "description": False,
@@ -388,8 +395,15 @@ class SandboxdCommThread:
             SmdBaseMsg | SandboxdCommThreadShutdown
         ] = SimpleQueue()
 
+        ## Whether this thread is terminating or not. Threads that are
+        ## terminating refuse any further messages from their clients, and
+        ## refuse broadcast messages, but may continue to send messages to
+        ## their clients and broadcast messages, as running helper processes
+        ## must have a chance to terminate.
+        self.is_terminating: bool = False
+
         ## The underlying connection to the client.
-        self.comm_session = comm_session
+        self.comm_session: SmdSession = comm_session
 
         ## Whether the client should have broadcast messages sent to it.
         self.client_is_long_running: bool = False
@@ -403,6 +417,10 @@ class SandboxdCommThread:
         ## A set of sandboxes with their configuration in flux pre-creation
         ## or pre-config-application.
         self.flux_sandbox_state_set: set[FluxSmdSandboxState] = set()
+
+        ## A set of correlation IDs currently in use to uniquely identify flux
+        ## sandbox states. This prevents malicious clients from intentionally
+        self.flux_correlation_id_set: set[int] = set()
 
         ## Specifies which functions correlate to which client-sent messages.
         ##
@@ -480,55 +498,80 @@ class SandboxdCommThread:
         assert self.comm_session.server_socket_fileno != -1
 
         while True:
+            if self.is_terminating:
+                ## Notify all other threads that this thread is shutting down
+                ## so they can perform any needed cleanup.
+                with SandboxdGlobal.session_list_lock:
+                    for comm_thread in SandboxdGlobal.comm_thread_list:
+                        comm_thread.notify_queue.put(
+                            SandboxdCommThreadShutdown(self)
+                        )
+                        while comm_thread.notify_write_pipe.write(
+                            b"\x00"
+                        ) == 0:
+                            pass
+                if len(self.handler_set) == 0:
+                    break
+
             epoll_event_fd_list: list[int] = [
                 x[0] for x in self.epoll_obj.poll()
             ]
             if self.terminate_read_fd in epoll_event_fd_list:
-                break
+                self.is_terminating = True
+                continue
 
             if self.notify_read_fd in epoll_event_fd_list:
                 self.notify_read_pipe.read(1)
                 notify_obj: SmdBaseMsg | SandboxdCommThreadShutdown = (
                     self.notify_queue.get()
                 )
-                if isinstance(notify_obj, SmdBaseMsg):
-                    try:
-                        self.comm_session.send_msg(notify_obj)
-                    except Exception as e:
-                        logging.error(
-                            "Could not send '%s'", notify_obj.name, exc_info=e
-                        )
-                        break
-                    ## HACK: We want all threads to terminate after sending a
-                    ## RESTART_INPROGRESS message, but we need those threads to
-                    ## actually send the RESTART_INPROGRESS message to their
-                    ## connected clients first. Therefore the thread that
-                    ## starts the shutdown can't just call terminate() on all
-                    ## other threads. Instead, the thread detects when it has
-                    ## just sent a RESTART_INPROGRESS message, and shuts itself
-                    ## down if so.
+                if not self.is_terminating:
                     if isinstance(
-                        notify_obj, SmdCommServerRestartInprogressMsg
+                        notify_obj, (SmdCommServerMsg, SmdCommBidiMsg)
                     ):
-                        break
-                else:  ## isinstance(notify_obj, SandboxdCommThreadShutdown)
-                    if (
-                        notify_obj.shutdown_thread
-                        in self.config_broadcast_thread_list
-                    ):
-                        self.config_broadcast_thread_list.remove(
+                        self.send_msg_safe(notify_obj)
+                        ## HACK: We want all threads to terminate after sending
+                        ## a RESTART_INPROGRESS message, but we need those
+                        ## threads to actually send the RESTART_INPROGRESS
+                        ## message to their connected clients first. Therefore
+                        ## the thread that starts the shutdown can't just call
+                        ## terminate() on all other threads. Instead, the
+                        ## thread detects when it has just sent a
+                        ## RESTART_INPROGRESS message, and shuts itself down
+                        ## if so.
+                        if isinstance(
+                            notify_obj, SmdCommServerRestartInprogressMsg
+                        ):
+                            self.is_terminating = True
+                            ## No continue needed because this is the first
+                            ## block in the loop.
+                    elif isinstance(notify_obj, SandboxdCommThreadShutdown):
+                        if (
                             notify_obj.shutdown_thread
+                            in self.config_broadcast_thread_list
+                        ):
+                            self.config_broadcast_thread_list.remove(
+                                notify_obj.shutdown_thread
+                            )
+                    else:
+                        logging.critical(
+                            "A thread sent an object of not-allowed type '%s' "
+                            + "as a notification to another thread",
+                            type(notify_obj),
                         )
+                        sys.exit(1)
                 epoll_event_fd_list.remove(self.notify_read_fd)
 
             if self.comm_session.server_socket_fileno in epoll_event_fd_list:
                 try:
+                    ## self.is_terminating is handled in
+                    ## handle_incoming_message().
                     self.handle_incoming_message()
                 except Exception as e:
                     logging.error(
                         "Could not handle message from client", exc_info=e
                     )
-                    break
+                    self.is_terminating = True
                 epoll_event_fd_list.remove(
                     self.comm_session.server_socket_fileno
                 )
@@ -556,28 +599,14 @@ class SandboxdCommThread:
                 assert isinstance(recv_obj, (SmdCommServerMsg, SmdCommBidiMsg))
                 msg_from_child: SmdCommServerMsg | SmdCommBidiMsg = recv_obj
                 self.handler_message_hook(msg_from_child)
-                try:
-                    self.comm_session.send_msg(msg_from_child)
-                except Exception as e:
-                    logging.error(
-                        "Could not send '%s'", msg_from_child.name, exc_info=e
-                    )
-                    break
+                self.send_msg_safe(msg_from_child)
                 self.broadcast_message_maybe(msg_from_child)
 
-        ## Close the I/O pipes for all handlers so that they can cleanly
-        ## terminate, rather than killing them manually.
+        ## In the unlikely event any child processes are still running, let
+        ## them terminate gracefully.
         for single_handler in self.handler_set:
             single_handler.parent_pipe.close()
         self.handler_set.clear()
-
-        ## Notify all other threads that this thread is shutting down so they
-        ## can perform any needed cleanup.
-        with SandboxdGlobal.session_list_lock:
-            for comm_thread in SandboxdGlobal.comm_thread_list:
-                comm_thread.notify_queue.put(SandboxdCommThreadShutdown(self))
-                while comm_thread.notify_write_pipe.write(b"\x00") == 0:
-                    pass
 
     def handle_incoming_message(self) -> None:
         """
@@ -585,6 +614,8 @@ class SandboxdCommThread:
         """
 
         client_msg: SmdBaseMsg = self.comm_session.get_msg()
+        if self.is_terminating:
+            return
         if type(client_msg) not in self.message_handler_map:
             raise ConnectionError(
                 f"No handler for message type '{str(type(client_msg))}'"
@@ -608,6 +639,22 @@ class SandboxdCommThread:
             type(msg_from_child)
         ]
         handler_func(msg_from_child)
+
+    def send_msg_safe(
+        self, msg_to_send: SmdCommServerMsg | SmdCommBidiMsg
+    ) -> None:
+        """
+        Attempts to send a message to the client. Marks the thread as
+        terminating if the attempt fails.
+        """
+
+        try:
+            self.comm_session.send_msg(msg_to_send)
+        except Exception as e:
+            logging.error(
+                "Could not send '%s'", msg_to_send.name, exc_info=e
+            )
+            self.is_terminating = True
 
     def broadcast_message_maybe(
         self, msg_to_send: SmdCommServerMsg | SmdCommBidiMsg
@@ -693,6 +740,8 @@ class SandboxdCommThread:
         ## in the notify queue. This prevents the client from receiving partial
         ## state information if started in the middle of other activity.
 
+        ## TODO: Only allow this to be called once per client connection.
+
         assert isinstance(client_msg, SmdCommClientSyncMsg)
 
         with SandboxdGlobal.sandbox_state_set_lock:
@@ -708,11 +757,11 @@ class SandboxdCommThread:
                 )
             )
             for message in message_batch:
-                self.comm_session.send_msg(message)
+                self.send_msg_safe(message)
         with SandboxdGlobal.damaged_sandbox_set_lock:
             if len(SandboxdGlobal.damaged_sandbox_set) != 0:
                 damaged_sandbox_correlation_id = SmdCommon.new_correlation_id()
-                self.comm_session.send_msg(
+                self.send_msg_safe(
                     SmdCommServerDamagedSandboxesStartMsg(
                         damaged_sandbox_correlation_id
                     )
@@ -723,13 +772,13 @@ class SandboxdCommThread:
                         != self.comm_session.user_id_numeric
                     ):
                         continue
-                    self.comm_session.send_msg(
+                    self.send_msg_safe(
                         SmdCommServerDamagedSandboxMsg(
                             damaged_sandbox_correlation_id,
                             [damaged_sandbox_state.path],
                         )
                     )
-                self.comm_session.send_msg(
+                self.send_msg_safe(
                     SmdCommServerDamagedSandboxesEndMsg(
                         damaged_sandbox_correlation_id
                     )
@@ -744,11 +793,11 @@ class SandboxdCommThread:
 
         assert isinstance(client_msg, SmdCommClientQueryNeedRestartMsg)
         if SandboxdGlobal.restart_required_file_path.exists():
-            self.comm_session.send_msg(
+            self.send_msg_safe(
                 SmdCommServerConfirmNeedRestartMsg(client_msg.correlation_id)
             )
             return
-        self.comm_session.send_msg(
+        self.send_msg_safe(
             SmdCommServerDenyNeedRestartMsg(client_msg.correlation_id)
         )
 
@@ -790,7 +839,7 @@ class SandboxdCommThread:
                             break
 
                 if not should_restart:
-                    self.comm_session.send_msg(
+                    self.send_msg_safe(
                         SmdCommServerRestartDeniedMsg(client_msg.correlation_id)
                     )
                     return
@@ -798,7 +847,7 @@ class SandboxdCommThread:
                 restart_inprogress_msg: SmdCommServerRestartInprogressMsg = (
                     SmdCommServerRestartInprogressMsg(client_msg.correlation_id)
                 )
-                self.comm_session.send_msg(restart_inprogress_msg)
+                self.send_msg_safe(restart_inprogress_msg)
                 self.broadcast_message_maybe(restart_inprogress_msg)
 
                 ## Note that this doesn't immediately terminate, it just
@@ -811,6 +860,8 @@ class SandboxdCommThread:
         """
         Handles DELETE_DAMAGED_SANDBOXES messages.
         """
+
+        ## TODO: Only allow this to be called once per client.
 
         assert isinstance(client_msg, SmdCommClientDeleteDamagedSandboxesMsg)
 
@@ -846,7 +897,7 @@ class SandboxdCommThread:
                 "Deleted damaged sandboxes for user '%s'",
                 self.comm_session.user_id_numeric,
             )
-            self.comm_session.send_msg(
+            self.send_msg_safe(
                 SmdCommServerDamagedSandboxesDeletedMsg(
                     client_msg.correlation_id
                 )
@@ -854,7 +905,7 @@ class SandboxdCommThread:
             return
 
         ## No logging here, we already logged the error earlier.
-        self.comm_session.send_msg(
+        self.send_msg_safe(
             SmdCommServerDamagedSandboxDeleteFailedMsg(
                 client_msg.correlation_id,
                 binary_blob="".join(
@@ -871,6 +922,14 @@ class SandboxdCommThread:
         assert isinstance(client_msg, SmdCommClientCreateStartMsg)
         assert self.comm_session.user_id_numeric is not None
 
+        if client_msg.correlation_id in self.flux_correlation_id_set:
+            self.send_msg_safe(
+                SmdCommServerCidInuseMsg(
+                    correlation_id=client_msg.correlation_id
+                )
+            )
+            return
+
         self.flux_sandbox_state_set.add(
             FluxSmdSandboxState(
                 op_type=FluxSmdSandboxStateType.CREATE,
@@ -886,12 +945,15 @@ class SandboxdCommThread:
         """
 
         assert isinstance(client_msg, SmdCommClientCreateEndMsg)
+        assert self.comm_session.user_id_numeric is not None
 
         target_flux_sandbox_state: FluxSmdSandboxState | None = None
         for flux_sandbox_state in self.flux_sandbox_state_set:
             if (
-                flux_sandbox_state.correlation_id == client_msg.correlation_id
+                flux_sandbox_state.state.user_id_numeric == self.comm_session.user_id_numeric
+                and flux_sandbox_state.correlation_id == client_msg.correlation_id
                 and flux_sandbox_state.op_type == FluxSmdSandboxStateType.CREATE
+                and not flux_sandbox_state.locked
             ):
                 target_flux_sandbox_state = flux_sandbox_state
                 break
@@ -901,7 +963,7 @@ class SandboxdCommThread:
                 + "correlation ID",
                 self.comm_session.user_id_numeric,
             )
-            self.comm_session.send_msg(
+            self.send_msg_safe(
                 SmdCommServerConfigInvalidMsg(
                     correlation_id=client_msg.correlation_id
                 )
@@ -909,11 +971,11 @@ class SandboxdCommThread:
             return
         if not target_flux_sandbox_state.all_options_set():
             logging.error(
-                "Received CREATE_END message from user '%s', but sandbox "
-                + "accumulated sandbox configuration is incomplete",
+                "Received CREATE_END message from user '%s', but accumulated "
+                + "sandbox configuration is incomplete",
                 self.comm_session.user_id_numeric,
             )
-            self.comm_session.send_msg(
+            self.send_msg_safe(
                 SmdCommServerConfigInvalidMsg(
                     correlation_id=client_msg.correlation_id
                 )
@@ -931,13 +993,16 @@ class SandboxdCommThread:
                 target_flux_sandbox_state.state
             )
         except Exception:
-            self.comm_session.send_msg(
+            self.send_msg_safe(
                 SmdCommServerCreateFailedMsg(client_msg.correlation_id)
             )
+            self.flux_sandbox_state_set.remove(target_flux_sandbox_state)
+            self.flux_correlation_id_set.remove(client_msg.correlation_id)
             return
 
         ## Sandbox creation started successfully, so register the new sandbox
         ## with the system and keep track of the handler.
+        target_flux_sandbox_state.locked = True
         with SandboxdGlobal.sandbox_state_set_lock:
             SandboxdGlobal.sandbox_state_set.add(
                 target_flux_sandbox_state.state
@@ -957,7 +1022,7 @@ class SandboxdCommThread:
                 [target_flux_sandbox_state.state.uuid_str],
             )
         )
-        self.comm_session.send_msg(create_inprogress_msg)
+        self.send_msg_safe(create_inprogress_msg)
         self.broadcast_message_maybe(create_inprogress_msg)
         message_batch: list[SmdCommServerMsg | SmdCommBidiMsg] = (
             get_messages_for_sandbox_state(
@@ -967,7 +1032,7 @@ class SandboxdCommThread:
             )
         )
         for message in message_batch:
-            self.comm_session.send_msg(message)
+            self.send_msg_safe(message)
             self.broadcast_message_maybe(message)
 
         ## The final CREATE_SUCCESS or CREATE_FAILED message is sent by the
@@ -979,8 +1044,20 @@ class SandboxdCommThread:
         Handles CONFIG_START messages.
         """
 
+        ## NOTE: This message intentionally does as little input validation as
+        ## possible. Any sandbox checks it would do would have to be redone in
+        ## client_config_end_handler to avoid a TOCTOU bug.
+
         assert isinstance(client_msg, SmdCommClientConfigStartMsg)
         assert self.comm_session.user_id_numeric is not None
+
+        if client_msg.correlation_id in self.flux_correlation_id_set:
+            self.send_msg_safe(
+                SmdCommServerCidInuseMsg(
+                    correlation_id=client_msg.correlation_id
+                )
+            )
+            return
 
         ## Always refuse to delete a sandbox that is mid-configure, and always
         ## refuse to start configuring a sandbox that is being deleted.
@@ -988,44 +1065,11 @@ class SandboxdCommThread:
         ## TODO: Move this comment to the handler for DELETE messages once
         ## that handler exists.
 
-        target_sandbox_state: SmdSandboxState | None = None
-        with SandboxdGlobal.sandbox_state_set_lock:
-            for sandbox_state in SandboxdGlobal.sandbox_state_set:
-                if (
-                    sandbox_state.user_id_numeric
-                    != self.comm_session.user_id_numeric
-                ):
-                    continue
-                if sandbox_state.uuid_str == client_msg.arg_list[0]:
-                    target_sandbox_state = sandbox_state
-                    break
-            if target_sandbox_state is None:
-                self.comm_session.send_msg(
-                    SmdCommServerSandboxMissingMsg(
-                        correlation_id=client_msg.correlation_id
-                    )
-                )
-                return
-            if is_sandbox_running(target_sandbox_state):
-                self.comm_session.send_msg(
-                    SmdCommServerSandboxRunningMsg(
-                        correlation_id=client_msg.correlation_id
-                    )
-                )
-                return
-            if is_sandbox_busy(target_sandbox_state):
-                self.comm_session.send_msg(
-                    SmdCommServerSandboxBusyMsg(
-                        correlation_id=client_msg.correlation_id
-                    )
-                )
-                return
-
         self.flux_sandbox_state_set.add(
             FluxSmdSandboxState(
                 op_type=FluxSmdSandboxStateType.CONFIG,
                 correlation_id=client_msg.correlation_id,
-                uuid_str=target_sandbox_state.uuid_str,
+                uuid_str=client_msg.arg_list[0],
                 user_id_numeric=self.comm_session.user_id_numeric,
             )
         )
@@ -1038,7 +1082,137 @@ class SandboxdCommThread:
         assert isinstance(client_msg, SmdCommClientConfigEndMsg)
         assert self.comm_session.user_id_numeric is not None
 
-        ## TODO: Implement
+        target_flux_sandbox_state: FluxSmdSandboxState | None = None
+        for flux_sandbox_state in self.flux_sandbox_state_set:
+            if (
+                flux_sandbox_state.state.user_id_numeric == self.comm_session.user_id_numeric
+                and flux_sandbox_state.correlation_id == client_msg.correlation_id
+                and flux_sandbox_state.op_type == FluxSmdSandboxStateType.CONFIG
+                and not flux_sandbox_state.locked
+            ):
+                target_flux_sandbox_state = flux_sandbox_state
+                break
+        if target_flux_sandbox_state is None:
+            logging.error(
+                "Received CONFIG_END message from user '%s' with invalid "
+                + "correlation ID",
+                self.comm_session.user_id_numeric
+            )
+            self.send_msg_safe(
+                SmdCommServerConfigInvalidMsg(
+                    correlation_id=client_msg.correlation_id
+                )
+            )
+            return
+        if not target_flux_sandbox_state.all_options_set():
+            logging.error(
+                "Received CONFIG_END message from user '%s', but accumulated "
+                + "sandbox configuration is incomplete",
+                self.comm_session.user_id_numeric,
+            )
+            self.send_msg_safe(
+                SmdCommServerConfigInvalidMsg(
+                    correlation_id=client_msg.correlation_id
+                )
+            )
+            return
+
+        ## We must lock the sandbox state set while running final checks and
+        ## kicking off sandbox configuration, otherwise another thread may mess
+        ## with the sandbox while we're working.
+        with SandboxdGlobal.sandbox_state_set_lock:
+            target_sandbox_state: SmdSandboxState | None = None
+            for sandbox_state in SandboxdGlobal.sandbox_state_set:
+                if (
+                    sandbox_state.user_id_numeric
+                    != self.comm_session.user_id_numeric
+                ):
+                    continue
+                if (
+                    sandbox_state.uuid_str
+                    == target_flux_sandbox_state.state.uuid_str
+                ):
+                    target_sandbox_state = sandbox_state
+                    break
+            if target_sandbox_state is None:
+                self.send_msg_safe(
+                    SmdCommServerSandboxMissingMsg(
+                        correlation_id=client_msg.correlation_id
+                    )
+                )
+                self.flux_sandbox_state_set.remove(target_flux_sandbox_state)
+                self.flux_correlation_id_set.remove(client_msg.correlation_id)
+                return
+            if is_sandbox_running(target_sandbox_state):
+                self.send_msg_safe(
+                    SmdCommServerSandboxRunningMsg(
+                        correlation_id=client_msg.correlation_id
+                    )
+                )
+                self.flux_sandbox_state_set.remove(target_flux_sandbox_state)
+                self.flux_correlation_id_set.remove(client_msg.correlation_id)
+                return
+            if is_sandbox_busy(target_sandbox_state):
+                self.send_msg_safe(
+                    SmdCommServerSandboxBusyMsg(
+                        correlation_id=client_msg.correlation_id
+                    )
+                )
+                self.flux_sandbox_state_set.remove(target_flux_sandbox_state)
+                self.flux_correlation_id_set.remove(client_msg.correlation_id)
+                return
+
+            ## Sandbox configuration is a long-running process.
+            try:
+                sandbox_config_proc: HandlerProc = HandlerProc(
+                    client_msg.correlation_id,
+                    config_handler_main,
+                )
+                sandbox_config_proc.parent_pipe.send(
+                    target_flux_sandbox_state.state
+                )
+            except Exception:
+                self.send_msg_safe(
+                    SmdCommServerConfigFailedMsg(client_msg.correlation_id)
+                )
+                self.flux_sandbox_state_set.remove(target_flux_sandbox_state)
+                self.flux_correlation_id_set.remove(client_msg.correlation_id)
+                return
+
+            ## Keep a copy of the old config data, then update the config data
+            ## to match
+            SandboxdGlobal.backup_sandbox_state_set.add(target_sandbox_state)
+            SandboxdGlobal.sandbox_state_set.remove(target_sandbox_state)
+            SandboxdGlobal.sandbox_state_set.add(
+                target_flux_sandbox_state.state
+            )
+
+        self.epoll_obj.register(
+            sandbox_config_proc.parent_pipe.fileno(), select.EPOLLIN
+        )
+        self.handler_set.add(sandbox_config_proc)
+        config_inprogress_msg: SmdCommServerConfigInprogressMsg = (
+            SmdCommServerConfigInprogressMsg(
+                client_msg.correlation_id,
+                [target_flux_sandbox_state.state.uuid_str],
+            )
+        )
+        self.send_msg_safe(config_inprogress_msg)
+        self.broadcast_message_maybe(config_inprogress_msg)
+        message_batch: list[SmdCommServerMsg | SmdCommBidiMsg] = (
+            get_messages_for_sandbox_state(
+                client_msg.correlation_id,
+                target_flux_sandbox_state.state,
+                after_failed_config=False,
+            )
+        )
+        for message in message_batch:
+            self.send_msg_safe(message)
+            self.broadcast_message_maybe(message)
+
+        ## The final CREATE_SUCCESS or CREATE_FAILED message is sent by the
+        ## config_handler_main process and is forwarded to the client by
+        ## thread_main_loop.
 
     ## TODO: add more client handlers here
 
@@ -1051,12 +1225,15 @@ class SandboxdCommThread:
         target_flux_sandbox_state: FluxSmdSandboxState | None = None
 
         for flux_sandbox_state in self.flux_sandbox_state_set:
-            if flux_sandbox_state.correlation_id == client_msg.correlation_id:
+            if (
+                flux_sandbox_state.correlation_id == client_msg.correlation_id
+                and not flux_sandbox_state.locked
+            ):
                 target_flux_sandbox_state = flux_sandbox_state
                 break
 
         if target_flux_sandbox_state is None:
-            self.comm_session.send_msg(
+            self.send_msg_safe(
                 SmdCommServerBidiUncorrelatedMsg(client_msg.correlation_id)
             )
             return
@@ -1173,6 +1350,9 @@ class SandboxdCommThread:
                 break
         if target_flux_sandbox_state is not None:
             self.flux_sandbox_state_set.remove(target_flux_sandbox_state)
+            self.flux_correlation_id_set.remove(
+                target_flux_sandbox_state.correlation_id
+            )
         else:
             logging.critical(
                 "sandboxd lost track of a sandbox, noticed while "
@@ -1201,6 +1381,9 @@ class SandboxdCommThread:
                     target_flux_sandbox_state.state
                 )
             self.flux_sandbox_state_set.remove(target_flux_sandbox_state)
+            self.flux_correlation_id_set.remove(
+                target_flux_sandbox_state.correlation_id
+            )
         else:
             logging.critical(
                 "sandboxd lost track of a sandbox, noticed while "

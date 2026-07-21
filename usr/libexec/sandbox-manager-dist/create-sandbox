@@ -26,8 +26,12 @@ cache_image_path="${cache_dir}/smd-base-img.ext4"
 cache_image_exp_path="${cache_dir}/smd-base-img-exp"
 cache_lock_path="${cache_dir}/smd-cache-lock"
 
-min_target_root_size='4294967296' ## 4 GiB
-min_target_data_size='1073741824' ## 1 GiB
+## These are populated from caller-provided arguments. The caller validates
+## that the root and data sizes are not larger than the minimum values, but
+## double-checking can't hurt, and the minimum root size is also used as the
+## size of the cached sandbox image.
+min_target_root_size=''
+min_target_data_size=''
 
 deb_mirror_nontorified='https://deb.debian.org/debian'
 deb_mirror_torified="tor+${deb_mirror_nontorified}"
@@ -356,6 +360,8 @@ smd_create_sandbox() {
   target_data_name="${3:-}"
   target_root_size="${4:-}"
   target_data_size="${5:-}"
+  min_target_root_size="${6:-}"
+  min_target_data_size="${7:-}"
   [ -n "${target_sandbox_path}" ] || die 1 'No target sandbox path provided!'
   ! [ -d "${target_sandbox_path}" ] \
     && die 1 'Target sandbox path does not exist or is not a directory!'
@@ -363,10 +369,16 @@ smd_create_sandbox() {
   [ -n "${target_data_name}" ] || die 1 'No target data image name provided!'
   [ -n "${target_root_size}" ] || die 1 'No target root size provided!'
   [ -n "${target_data_size}" ] || die 1 'No target data size provided!'
+  [ -n "${min_target_root_size}" ] || die 1 'No minimum root size provided!'
+  [ -n "${min_target_data_size}" ] || die 1 'No minimum data size provided!'
   is_whole_number "${target_root_size}" \
     || die 1 'Target root size is not a whole number!'
   is_whole_number "${target_data_size}" \
     || die 1 'Target data size is not a while number!'
+  is_whole_number "${min_target_root_size}" \
+    || die 1 'Minimum root size is not a whole number!'
+  is_whole_number "${min_target_data_size}" \
+    || die 1 'Minimum data size is not a whole number!'
   [ "${target_root_size}" -ge "${min_target_root_size}" ] \
     || die 1 "Target root size '${target_root_size}' is smaller than minimum target root size '${min_target_root_size}'!"
   [ "${target_data_size}" -ge "${min_target_data_size}" ] \
@@ -396,8 +408,7 @@ smd_create_sandbox() {
 
   if [ "${target_root_size}" -gt "${min_target_root_size}" ]; then
     truncate --size="${target_root_size}" -- "${target_root_path}"
-    e2fsck -f -- "${target_root_path}"
-    resize2fs -- "${target_root_path}"
+    resize2fs -f -- "${target_root_path}"
   fi
 
   ## Create the data image.

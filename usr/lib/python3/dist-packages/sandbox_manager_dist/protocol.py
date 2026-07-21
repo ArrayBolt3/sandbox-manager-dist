@@ -932,6 +932,19 @@ class SmdCommServerRestartInprogressMsg(
     """
 
 
+class SmdCommServerRestartSuccessMsg(
+    SmdCommServerMsg,
+    name="RESTART_SUCCESS",
+    arg_count=0,
+    trailing_binary=False,
+    do_broadcast=True,
+):
+    """
+    Informs the client that the server has finished preparing to restart and
+    will now disconnect.
+    """
+
+
 class SmdCommServerRestartDeniedMsg(
     SmdCommServerMsg,
     name="RESTART_DENIED",
@@ -1055,6 +1068,19 @@ class SmdCommServerBidiUncorrelatedMsg(
 ):
     """
     Informs the client that it sent a bidi message with a bad correlation ID.
+    """
+
+
+class SmdCommServerCidInuseMsg(
+    SmdCommServerMsg,
+    name="CID_INUSE",
+    arg_count=0,
+    trailing_binary=False,
+    do_broadcast=False,
+):
+    """
+    Informs the client that it sent a message with a non-unique correlation ID
+    where a unique one was needed.
     """
 
 
@@ -2061,12 +2087,9 @@ class SmdCommBidiRootVolSizeMsg(
         assert arg_list is not None
         SmdCommon.validate_id(
             arg_list[0],
-            [SmdValidateType.DECIMAL_INT],
+            [SmdValidateType.ROOT_VOL_SIZE],
             "Root volume size failed validation",
         )
-        vol_size: int = int(arg_list[0])
-        if not 1 <= vol_size <= SmdCommon.max_vol_size:
-            raise ValueError("Root volume size out of range")
 
 
 class SmdCommBidiDataVolSizeMsg(
@@ -2089,12 +2112,9 @@ class SmdCommBidiDataVolSizeMsg(
         assert arg_list is not None
         SmdCommon.validate_id(
             arg_list[0],
-            [SmdValidateType.DECIMAL_INT],
+            [SmdValidateType.DATA_VOL_SIZE],
             "Data volume size failed validation",
         )
-        vol_size: int = int(arg_list[0])
-        if not 1 <= vol_size <= SmdCommon.max_vol_size:
-            raise ValueError("Data volume size out of range")
 
 
 class SmdCommBidiMemoryMsg(

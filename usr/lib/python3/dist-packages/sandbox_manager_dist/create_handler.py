@@ -3,7 +3,7 @@
 # Copyright (C) 2026 - 2026 ENCRYPTED SUPPORT LLC <adrelanos@whonix.org>
 # See the file COPYING for copying conditions.
 
-# pylint: disable=broad-exception-caught
+# pylint: disable=broad-exception-caught, duplicate-code
 
 """
 create_handler.py - Creates sandboxes.
@@ -16,8 +16,6 @@ from multiprocessing.connection import Connection
 from pathlib import Path
 from typing import Any
 
-import tomli_w
-
 from .common import (
     SmdCommon,
     SmdSandboxState,
@@ -29,41 +27,6 @@ from .protocol import (
     SmdCommServerCreateSuccessMsg,
     SmdCommServerCreateFailedMsg,
 )
-
-
-def write_sandbox_config(
-    config_path: Path, sandbox_state: SmdSandboxState
-) -> None:
-    """
-    Converts the part of sandbox_state that contains configuration data into
-    TOML, and writes it to a file.
-    """
-
-    conf_dict: dict[str, Any] = {
-        "name": sandbox_state.name,
-        "description": sandbox_state.description,
-        "memory": sandbox_state.memory,
-        "cpu_weight": sandbox_state.cpu_weight,
-        "io_weight": sandbox_state.io_weight,
-        "audio_enabled": sandbox_state.audio_enabled,
-        "wayland_enabled": sandbox_state.wayland_enabled,
-        "x11_enabled": sandbox_state.x11_enabled,
-        "three_d_enabled": sandbox_state.three_d_enabled,
-        "network_enabled": sandbox_state.network_enabled,
-        "nested_sandboxing_enabled": sandbox_state.nested_sandboxing_enabled,
-        "shared_fso_list": [
-            {
-                "read_write": x.read_write,
-                "host_path": x.host_path,
-                "sandbox_path": x.sandbox_path,
-            }
-            for x in sandbox_state.shared_fso_list
-        ],
-        "shared_device_list": sandbox_state.shared_device_list,
-    }
-
-    with open(config_path, "wb") as f:
-        tomli_w.dump(conf_dict, f)
 
 
 def bootstrap_sandbox_disk_images(
@@ -82,6 +45,8 @@ def bootstrap_sandbox_disk_images(
             SmdCommon.sandbox_data_file,
             str(sandbox_state.root_vol_size),
             str(sandbox_state.data_vol_size),
+            str(SmdCommon.min_root_vol_size),
+            str(SmdCommon.min_data_vol_size),
         ],
         check=True,
     )
@@ -135,7 +100,7 @@ def create_handler_main(child_pipe: Connection) -> None:
             return
 
     try:
-        write_sandbox_config(
+        SmdCommon.write_sandbox_config(
             Path(user_sandbox_dir, SmdCommon.sandbox_config_file),
             sandbox_state,
         )

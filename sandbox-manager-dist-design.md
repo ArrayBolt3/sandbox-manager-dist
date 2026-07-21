@@ -1894,8 +1894,14 @@ interface directly.
       users other than the user that triggered it. Must be correlated to a
       client-sent `RESTART` message. Takes no arguments. Does not include a
       binary blob.
-      * Note that there is no `RESTART_SUCCESS` message; the server will
-        disconnect all clients for all users after sending this.
+    * `RESTART_SUCCESS` - Informs the frontend that the server has finished
+      preparing to restart itself and will now disconnect. Broadcast to all
+      clients whether long-lived or not, this must also be broadcast to
+      clients running under users other than the user that triggered it. Must
+      be correlated to a client-sent `RESTART` message. Takes no arguments.
+      Does not include a binary blob.
+      * Implementation note, the server will restart immediately after this is
+        sent.
     * `RESTART_DENIED` - Informs the frontend that the restart request has
       been rejected. Must be correlated to a client-sent `RESTART` message.
       Takes no arguments. Does not include a binary blob.
@@ -1936,6 +1942,13 @@ interface directly.
       `CREATE_START` or `CONFIG_START` message. Must be correlated to the
       problematic bidi message. Takes no arguments. Does not include a binary
       blob.
+    * `CID_INUSE` - Informs the frontend that it has sent a message with a
+      non-unique correlation ID in a context where a unique correlation ID is
+      mandatory. Usually this means the correlation ID is used to uniquely
+      identify some form of internal object, and the non-unique ID would result
+      in an object being created that would be indistinguishable from another
+      already-existing one. Must be correlated to the problematic message.
+      Takes no arguments. Does not include a binary blob.
     * `DAMAGED_SANDBOXES_START` - Informs the frontend that damaged sandboxes
       belonging to its user account are present. Introduces a new correlation
       ID. Takes no arguments. Does not include a binary blob.
@@ -2226,11 +2239,15 @@ interface directly.
     * `DESCRIPTION` - Specifies the description of a sandbox. Takes one
       argument; the sandbox description. Does not include a binary blob.
     * `ROOT_VOL_SIZE` - Specifies the size of the sandbox's root volume, in
-      bytes. The maximum root volume size is currently 16 TiB - 4096 bytes.
-      Takes one argument, the volume size. Does not include a binary blob.
+      bytes. The maximum root volume size is 16 TiB - 4096 bytes. The minimum
+      size is 4 GiB. The size must be evenly divisible by 4096. Takes one
+      argument, the volume size. Does not include a binary blob.
+      * The requirement for the size to be a multiple of 4096 is because this
+        is the only block size supported for ext4 on amd64 systems.
     * `DATA_VOL_SIZE` - Specifies the size of the sandbox's data volume, in
-      bytes. The maximum data volume size is currently 16 TiB - 4096 bytes.
-      Takes one argument, the volume size. Does not include a binary blob.
+      bytes. The maximum data volume size is 16 TiB - 4096 bytes. The minimum
+      size is 1 GiB. The size must be evenly divisible by 4096. Takes one
+      argument, the volume size. Does not include a binary blob.
     * `MEMORY` - Specifies the size of the sandbox's available RAM, in bytes.
       The maximum memory size is currently 1 TB. Takes one argument, the memory
       size. Does not include a binary blob.
