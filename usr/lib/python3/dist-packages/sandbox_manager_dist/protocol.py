@@ -433,15 +433,14 @@ class SmdCommClientConfigEndMsg(
     """
 
 
-class SmdCommClientGetConfigMsg(
+class SmdCommClientGetStateMsg(
     SmdCommClientMsg,
-    name="GET_CONFIG",
+    name="GET_STATE",
     arg_count=1,
     trailing_binary=False,
 ):
     """
-    Asks the server to send the configuration details of the specified
-    sandbox.
+    Asks the server to send the state details of the specified sandbox.
     """
 
     def __init__(
@@ -1260,16 +1259,16 @@ class SmdCommServerConfigFailedMsg(
     """
 
 
-class SmdCommServerConfigInfoStartMsg(
+class SmdCommServerStateInfoStartMsg(
     SmdCommServerMsg,
-    name="CONFIG_INFO_START",
+    name="STATE_INFO_START",
     arg_count=1,
     trailing_binary=False,
     do_broadcast=True,
 ):
     """
-    Informs the client that messages defining a sandbox's configuration are
-    about to be sent.
+    Informs the client that messages defining a sandbox's state are about to
+    be sent.
     """
 
     def __init__(
@@ -1287,16 +1286,16 @@ class SmdCommServerConfigInfoStartMsg(
         )
 
 
-class SmdCommServerConfigInfoEndMsg(
+class SmdCommServerStateInfoEndMsg(
     SmdCommServerMsg,
-    name="CONFIG_INFO_END",
+    name="STATE_INFO_END",
     arg_count=0,
     trailing_binary=False,
     do_broadcast=True,
 ):
     """
     Informs the client that the server is done sending messages defining a
-    sandbox's configuration.
+    sandbox's state.
     """
 
 

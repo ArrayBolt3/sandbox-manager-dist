@@ -1802,12 +1802,13 @@ interface directly.
       backend should apply the new configuration. Must be correlated to a
       `CONFIG_START` message. Takes no arguments. Does not include a binary
       blob.
-    * `GET_CONFIG` - Asks the backend to send the client the current
-      configuration of the specified sandbox. Introduces a new correlation ID.
+    * `GET_STATE` - Asks the backend to send the client the current
+      state info for the specified sandbox. Introduces a new correlation ID.
       Supports one argument; the UUID of the sandbox to read the configuration
       of.  Does not include a binary blob.
       * Note - there is no reason for a long-lived client to send this
-        message.
+        message. This is how the CLI client can get config information about
+        the sandbox.
     * `DELETE` - Tells the backend to delete a sandbox. Introduces a new
       correlation ID. Takes one argument; the UUID of the sandbox to delete.
       Does not include a binary blob.
@@ -1981,8 +1982,8 @@ interface directly.
       include a binary blob.
       * Implementation note, after sending this, but before sending one of
         `CREATE_SUCCESS` or `CREATE_FAILED`, the backend must send
-        `CONFIG_INFO_START`, the config info of the new sandbox, and
-        `CONFIG_INFO_END`.
+        `STATE_INFO_START`, the config info of the new sandbox, and
+        `STATE_INFO_END`.
     * `CREATE_SUCCESS` - Informs the frontend that a sandbox has been
       successfully created. Broadcast to long-lived clients. Must be
       correlated to a `CREATE_INPROGRESS` message. Takes no arguments. Does
@@ -2000,8 +2001,8 @@ interface directly.
       binary blob.
       * Implementation note, after sending this, but before sending one of
         `CONFIG_SUCCESS` or `CONFIG_FAILED`, the backend must send
-        `CONFIG_INFO_START`, the new config info of the sandbox, and
-        `CONFIG_INFO_END`.
+        `STATE_INFO_START`, the new config info of the sandbox, and
+        `STATE_INFO_END`.
     * `CONFIG_SUCCESS` - Informs the frontend that a sandbox has been
       successfully reconfigured. Broadcast to long-lived clients. Must be
       correlated to a `CONFIG_INPROGRESS` message. Takes no arguments. Does
@@ -2011,7 +2012,7 @@ interface directly.
       `CONFIG_INPROGRESS` message. Takes no arguments.  Does not include a
       binary blob.
       * Implementation note, the backend is expected to send a
-        `CONFIG_INFO_START` ... `CONFIG_INFO_END` block correlated to the
+        `STATE_INFO_START` ... `STATE_INFO_END` block correlated to the
         `CONFIG_FAILED` message after sending one. This is to tell the frontend
         the old state to revert to. Theoretically we could make the frontend
         simply remember the old state, but this creates some difficulties when
@@ -2019,24 +2020,25 @@ interface directly.
         long-lived client while a sandbox is mid-reconfigure. We would have to
         send both the old and new states during the initial config sync, which
         makes the logic for getting a config message block more convoluted.
-    * `CONFIG_INFO_START` - Informs the frontend that messages defining a
+    * `STATE_INFO_START` - Informs the frontend that messages defining a
       sandbox's configuration are about to be sent. Broadcast to long-lived
       clients if correlated to a `CREATE_INPROGRESS`, `CONFIG_INPROGRESS`,
       `CLONE_INPROGRESS`, or `CONFIG_FAILED` message. May be correlated to a
       `CREATE_INPROGRESS`,`CONFIG_INPROGRESS`, `CONFIG_FAILED`,
-      `CLONE_INPROGRESS`, or client-sent `GET_CONFIG` message, may also
+      `CLONE_INPROGRESS`, or client-sent `GET_STATE` message, may also
       introduce a new correlation ID. Takes one argument, the UUID of the
       sandbox whose config info is being sent. Does not include a binary blob.
-    * `CONFIG_INFO_END` - Informs the frontend that it is done sending
+    * `STATE_INFO_END` - Informs the frontend that it is done sending
       messages defining a sandbox's configuration. Broadcast to long-lived
-      clients. Must be correlated to a `CONFIG_INFO_START` message. Takes no
+      clients. Must be correlated to a `STATE_INFO_START` message. Takes no
       arguments. Does not include a binary blob.
     * `DELETE_INPROGRESS` - Informs the frontend that the sandbox deletion
       request has been accepted and is being processed. Broadcast to
       long-lived clients. Must be correlated to a client-sent `DELETE` message
-      when sent to the provoking client, introduces a new correlation ID
-      otherwise. Takes one argument; the UUID of the sandbox being deleted.
-      Does not include a binary blob.
+      when sent to the provoking client, may be correlated to a
+      `STATE_INFO_START` message or introduce a new correlation ID otherwise.
+      Takes one argument; the UUID of the sandbox being deleted. Does not
+      include a binary blob.
     * `DELETE_SUCCESS` - Informs the frontend that a sandbox has been
       successfully deleted. Broadcast to long-lived clients. Must be
       correlated to a `DELETE_INPROGRESS` message. Takes no arguments.
@@ -2053,8 +2055,8 @@ interface directly.
       blob.
       * Implementation note, after sending this, but before sending one of
         `CLONE_SUCCESS` or `CLONE_FAILED`, the backend must send
-        `CONFIG_INFO_START`, the new config info of the sandbox, and
-        `CONFIG_INFO_END`.
+        `STATE_INFO_START`, the new config info of the sandbox, and
+        `STATE_INFO_END`.
     * `CLONE_SUCCESS` - Informs the frontend that a sandbox has been
       successfully cloned. Broadcast to long-lived clients. Must be correlated
       to a `CLONE_INPROGRESS` message. Takes no arguments. Does not include a
@@ -2066,16 +2068,15 @@ interface directly.
     * `BOOT_INPROGRESS` - Informs the frontend that the boot request has been
       accepted and is being processed. Broadcast to long-lived clients. Must
       be correlated to a client-sent `BOOT` message when sent to the provoking
-      client, introduces a new correlation ID otherwise. Takes two arguments;
-      the UUID of the sandbox being booted, and the mode being booted in
-      (either "work" or "update"). Does not include a binary blob.
+      client, may be correlated to a `STATE_INFO_START` mesasge or introduce a
+      new correlation ID otherwise. Takes two arguments; the UUID of the
+      sandbox being booted, and the mode being booted in (either "work" or
+      "update"). Does not include a binary blob.
     * `BOOT_SUCCESS` - Informs the frontend that a sandbox has been
-      successfully booted. Broadcast to long-lived clients. May be correlated
-      to a `BOOT_INPROGRESS` message, may also introduce a new correlation ID.
-      Takes two arguments; the UUID of the sandbox, and the mode the sandbox is
-      booted in (either "work" or "update"). Does not include a binary blob.
-      * The only time this message will introduce a new correlation ID is if it
-        is being sent during an initial config sync.
+      successfully booted. Broadcast to long-lived clients. Must be correlated
+      to a `BOOT_INPROGRESS` or `STATE_INFO_START` message. Takes two
+      arguments; the UUID of the sandbox, and the mode the sandbox is booted
+      in (either "work" or "update"). Does not include a binary blob.
     * `BOOT_FAILED` - Informs the frontend that attempting to boot a sandbox
       has failed. Broadcast to long-lived clients. Must be correlated to a
       `BOOT_INPROGRESS` message.  Takes no arguments. Does not include a
@@ -2083,9 +2084,9 @@ interface directly.
     * `SHUTDOWN_INPROGRESS` - Informs the frontend that the shutdown request
       has been accepted and is being processed. Broadcast to long-lived
       clients. Must be correlated to a `SHUTDOWN` message when sent to the
-      provoking client, introduces a new correlation ID otherwise. Takes one
-      argument; the UUID of the sandbox being shut down. Does not include a
-      binary blob.
+      provoking client, may be correlated to a `STATE_INFO_START` message or
+      introduce a new correlation ID otherwise. Takes one argument; the UUID of
+      the sandbox being shut down. Does not include a binary blob.
       * TODO: Should this differentiate between "shutting down gracefully" and
         "shutting down forcefully"? This previously was designed to distinguish
         between the two, but because the UI spec doesn't show this, the
@@ -2231,7 +2232,7 @@ interface directly.
       be opened. Must be correlated to a client-sent `SHELL` message. Takes no
       arguments. Does not include a binary blob.
   * Sent in either direction, as needed, all of these must be correlated to a
-    `CREATE_START`, `CONFIG_START`, `CONFIG_FAILED`, or `CONFIG_INFO_START`
+    `CREATE_START`, `CONFIG_START`, `CONFIG_FAILED`, or `STATE_INFO_START`
     message, will be broadcast to long-running clients if the correlated
     message is broadcast:
     * `NAME` - Specifies the name of a sandbox. Takes one argument, the name

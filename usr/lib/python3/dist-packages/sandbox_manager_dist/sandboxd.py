@@ -68,6 +68,9 @@ class SandboxdGlobal:
     ## event of a failure.
     backup_sandbox_state_set: set[SmdSandboxState] = set()
     ## This lock covers both sandbox_state_set and backup_sandbox_state_set.
+    ## It must be held not only when accessing the list, but when accessing any
+    ## object within the list (including objects that were added to the list
+    ## but also may be reached through other references!).
     sandbox_state_set_lock: Lock = Lock()
     damaged_sandbox_set: set[DamagedSandboxInfo] = set()
     damaged_sandbox_set_lock: Lock = Lock()
@@ -444,6 +447,7 @@ class SandboxdCommThread:
             SmdCommClientCreateEndMsg: self.client_create_end_handler,
             SmdCommClientConfigStartMsg: self.client_config_start_handler,
             SmdCommClientConfigEndMsg: self.client_config_end_handler,
+            SmdCommClientGetStateMsg: self.client_get_state_handler,
             ## TODO: add more client handlers here
             SmdCommBidiNameMsg: self.client_bidi_catchall_handler,
             SmdCommBidiDescriptionMsg: self.client_bidi_catchall_handler,
@@ -472,6 +476,8 @@ class SandboxdCommThread:
         ] = {
             SmdCommServerCreateSuccessMsg: self.server_create_success_handler,
             SmdCommServerCreateFailedMsg: self.server_create_failed_handler,
+            SmdCommServerConfigSuccessMsg: self.server_config_success_handler,
+            SmdCommServerConfigFailedMsg: self.server_config_failed_handler,
             ## TODO: add more server handlers here
         }
 
@@ -703,8 +709,8 @@ class SandboxdCommThread:
                         msg_to_send,
                         (
                             SmdCommBidiMsg,
-                            SmdCommServerConfigInfoStartMsg,
-                            SmdCommServerConfigInfoEndMsg,
+                            SmdCommServerStateInfoStartMsg,
+                            SmdCommServerStateInfoEndMsg,
                         ),
                     ):
                         if comm_thread not in self.config_broadcast_thread_list:
@@ -1002,28 +1008,19 @@ class SandboxdCommThread:
 
         ## Sandbox creation started successfully, so register the new sandbox
         ## with the system and keep track of the handler.
-        target_flux_sandbox_state.locked = True
-        with SandboxdGlobal.sandbox_state_set_lock:
-            SandboxdGlobal.sandbox_state_set.add(
-                target_flux_sandbox_state.state
-            )
-        ## Do NOT remove target_flux_sandbox_state from
-        ## self.flux_sandbox_state_set yet, it's the only thing binding
-        ## a still-creating sandbox to a correlation ID, and we'll need that
-        ## to remove the sandbox from SandboxdGlobal.sandbox_state_set if
-        ## creation fails.
+        ##
+        ## Note that the operations here are intentionally done in this order.
+        ## We cannot access target_flux_sandbox_state.state outside of a
+        ## locking block once it's added to the sandbox state set, but we want
+        ## to keep as much of the code out of the locking block as possible,
+        ## and we don't want to tell the client that the sandbox has been
+        ## registered before it actually is registered.
         self.epoll_obj.register(
             sandbox_create_proc.parent_pipe.fileno(), select.EPOLLIN
         )
         self.handler_set.add(sandbox_create_proc)
-        create_inprogress_msg: SmdCommServerCreateInprogressMsg = (
-            SmdCommServerCreateInprogressMsg(
-                client_msg.correlation_id,
-                [target_flux_sandbox_state.state.uuid_str],
-            )
-        )
-        self.send_msg_safe(create_inprogress_msg)
-        self.broadcast_message_maybe(create_inprogress_msg)
+        ## get_messages_for_sandbox_state() returns a CREATE_INPROGRESS message
+        ## for us to send.
         message_batch: list[SmdCommServerMsg | SmdCommBidiMsg] = (
             get_messages_for_sandbox_state(
                 client_msg.correlation_id,
@@ -1031,10 +1028,20 @@ class SandboxdCommThread:
                 after_failed_config=False,
             )
         )
+        target_flux_sandbox_state.locked = True
+        with SandboxdGlobal.sandbox_state_set_lock:
+            SandboxdGlobal.sandbox_state_set.add(
+                target_flux_sandbox_state.state
+            )
         for message in message_batch:
             self.send_msg_safe(message)
             self.broadcast_message_maybe(message)
-
+        ## Do NOT remove target_flux_sandbox_state from
+        ## self.flux_sandbox_state_set yet, it's the only thing binding
+        ## a still-creating sandbox to a correlation ID, and we'll need that
+        ## to remove the sandbox from SandboxdGlobal.sandbox_state_set if
+        ## creation fails.
+        ##
         ## The final CREATE_SUCCESS or CREATE_FAILED message is sent by the
         ## create_handler_main process and is forwarded to the client by
         ## thread_main_loop.
@@ -1117,6 +1124,7 @@ class SandboxdCommThread:
             )
             return
 
+        target_flux_sandbox_state.locked = True
         ## We must lock the sandbox state set while running final checks and
         ## kicking off sandbox configuration, otherwise another thread may mess
         ## with the sandbox while we're working.
@@ -1187,25 +1195,22 @@ class SandboxdCommThread:
                 target_flux_sandbox_state.state
             )
 
+            ## get_messages_for_sandbox_state() returns a CONFIG_INPROGRESS
+            ## message for us to send. This must be done in the locking block
+            ## since target_flux_sandbox_state.state is now in the sandbox
+            ## state set.
+            message_batch: list[SmdCommServerMsg | SmdCommBidiMsg] = (
+                get_messages_for_sandbox_state(
+                    client_msg.correlation_id,
+                    target_flux_sandbox_state.state,
+                    after_failed_config=False,
+                )
+            )
+
         self.epoll_obj.register(
             sandbox_config_proc.parent_pipe.fileno(), select.EPOLLIN
         )
         self.handler_set.add(sandbox_config_proc)
-        config_inprogress_msg: SmdCommServerConfigInprogressMsg = (
-            SmdCommServerConfigInprogressMsg(
-                client_msg.correlation_id,
-                [target_flux_sandbox_state.state.uuid_str],
-            )
-        )
-        self.send_msg_safe(config_inprogress_msg)
-        self.broadcast_message_maybe(config_inprogress_msg)
-        message_batch: list[SmdCommServerMsg | SmdCommBidiMsg] = (
-            get_messages_for_sandbox_state(
-                client_msg.correlation_id,
-                target_flux_sandbox_state.state,
-                after_failed_config=False,
-            )
-        )
         for message in message_batch:
             self.send_msg_safe(message)
             self.broadcast_message_maybe(message)
@@ -1213,6 +1218,43 @@ class SandboxdCommThread:
         ## The final CREATE_SUCCESS or CREATE_FAILED message is sent by the
         ## config_handler_main process and is forwarded to the client by
         ## thread_main_loop.
+
+    def client_get_state_handler(self, client_msg: SmdBaseMsg) -> None:
+        """
+        Handles GET_STATE messages.
+        """
+
+        assert isinstance(client_msg, SmdCommClientGetStateMsg)
+        assert self.comm_session.user_id_numeric is not None
+
+        with SandboxdGlobal.sandbox_state_set_lock:
+            target_sandbox_state: SmdSandboxState | None = None
+            for sandbox_state in SandboxdGlobal.sandbox_state_set:
+                if (
+                    sandbox_state.user_id_numeric
+                    != self.comm_session.user_id_numeric
+                ):
+                    continue
+                if sandbox_state.uuid_str == client_msg.arg_list[0]:
+                    target_sandbox_state = sandbox_state
+                    break
+            if target_sandbox_state is None:
+                self.send_msg_safe(
+                    SmdCommServerSandboxMissingMsg(
+                        correlation_id=client_msg.correlation_id
+                    )
+                )
+                return
+            message_batch: list[SmdCommServerMsg | SmdCommBidiMsg] = (
+                get_messages_for_sandbox_state(
+                    client_msg.correlation_id,
+                    target_sandbox_state,
+                    after_failed_config=False,
+                )
+            )
+
+        for message in message_batch:
+            self.send_msg_safe(message)
 
     ## TODO: add more client handlers here
 
@@ -1348,18 +1390,17 @@ class SandboxdCommThread:
             if flux_sandbox_state.correlation_id == server_msg.correlation_id:
                 target_flux_sandbox_state = flux_sandbox_state
                 break
-        if target_flux_sandbox_state is not None:
-            self.flux_sandbox_state_set.remove(target_flux_sandbox_state)
-            self.flux_correlation_id_set.remove(
-                target_flux_sandbox_state.correlation_id
-            )
-        else:
+        if target_flux_sandbox_state is None:
             logging.critical(
                 "sandboxd lost track of a sandbox, noticed while "
                 + "handling '%s' message",
                 server_msg.name,
             )
             sys.exit(1)
+        self.flux_sandbox_state_set.remove(target_flux_sandbox_state)
+        self.flux_correlation_id_set.remove(
+            target_flux_sandbox_state.correlation_id
+        )
 
     def server_create_failed_handler(self, server_msg: SmdBaseMsg) -> None:
         """
@@ -1375,22 +1416,115 @@ class SandboxdCommThread:
             if flux_sandbox_state.correlation_id == server_msg.correlation_id:
                 target_flux_sandbox_state = flux_sandbox_state
                 break
-        if target_flux_sandbox_state is not None:
-            with SandboxdGlobal.sandbox_state_set_lock:
-                SandboxdGlobal.sandbox_state_set.remove(
-                    target_flux_sandbox_state.state
-                )
-            self.flux_sandbox_state_set.remove(target_flux_sandbox_state)
-            self.flux_correlation_id_set.remove(
-                target_flux_sandbox_state.correlation_id
-            )
-        else:
+        if target_flux_sandbox_state is None:
             logging.critical(
                 "sandboxd lost track of a sandbox, noticed while "
                 + "handling '%s' message",
                 server_msg.name,
             )
             sys.exit(1)
+        with SandboxdGlobal.sandbox_state_set_lock:
+            SandboxdGlobal.sandbox_state_set.remove(
+                target_flux_sandbox_state.state
+            )
+        self.flux_sandbox_state_set.remove(target_flux_sandbox_state)
+        self.flux_correlation_id_set.remove(
+            target_flux_sandbox_state.correlation_id
+        )
+
+    def server_config_success_handler(self, server_msg: SmdBaseMsg) -> None:
+        """
+        Hook for CONFIG_SUCCESS messages.
+        """
+
+        assert isinstance(server_msg, SmdCommServerConfigSuccessMsg)
+
+        ## Remove the sandbox of interest from the flux sandbox state set and
+        ## from the backup state set.
+        target_flux_sandbox_state: FluxSmdSandboxState | None = None
+        for flux_sandbox_state in self.flux_sandbox_state_set:
+            if flux_sandbox_state.correlation_id == server_msg.correlation_id:
+                target_flux_sandbox_state = flux_sandbox_state
+                break
+        if target_flux_sandbox_state is None:
+            logging.critical(
+                "sandboxd lost track of a sandbox, noticed while "
+                + "handling '%s' message",
+                server_msg.name,
+            )
+            sys.exit(1)
+        with SandboxdGlobal.sandbox_state_set_lock:
+            removed_backup: bool = False
+            for backup_sandbox_state in SandboxdGlobal.backup_sandbox_state_set:
+                if (
+                    backup_sandbox_state.uuid_str
+                    == target_flux_sandbox_state.state.uuid_str
+                ):
+                    SandboxdGlobal.backup_sandbox_state_set.remove(
+                        backup_sandbox_state
+                    )
+                    removed_backup = True
+                    break
+            if not removed_backup:
+                logging.critical(
+                    "sandboxd lost track of backup sandbox config, noticed "
+                    + "while handling '%s' message",
+                    server_msg.name,
+                )
+                sys.exit(1)
+        self.flux_sandbox_state_set.remove(target_flux_sandbox_state)
+        self.flux_correlation_id_set.remove(
+            target_flux_sandbox_state.correlation_id
+        )
+
+    def server_config_failed_handler(self, server_msg: SmdBaseMsg) -> None:
+        """
+        Hook for CONFIG_FAILED messages.
+        """
+
+        assert isinstance(server_msg, SmdCommServerConfigFailedMsg)
+
+        ## Remove the sandbox of interest from the flux sandbox state set and
+        ## restore the backup state.
+        target_flux_sandbox_state: FluxSmdSandboxState | None = None
+        for flux_sandbox_state in self.flux_sandbox_state_set:
+            if flux_sandbox_state.correlation_id == server_msg.correlation_id:
+                target_flux_sandbox_state = flux_sandbox_state
+                break
+        if target_flux_sandbox_state is None:
+            logging.critical(
+                "sandboxd lost track of a sandbox, noticed while "
+                + "handling '%s' message",
+                server_msg.name,
+            )
+            sys.exit(1)
+        with SandboxdGlobal.sandbox_state_set_lock:
+            target_backup_sandbox_state: SmdSandboxState | None = None
+            for backup_sandbox_state in SandboxdGlobal.backup_sandbox_state_set:
+                if (
+                    backup_sandbox_state.uuid_str
+                    == target_flux_sandbox_state.state.uuid_str
+                ):
+                    target_backup_sandbox_state = backup_sandbox_state
+                    break
+            if target_backup_sandbox_state is None:
+                logging.critical(
+                    "sandboxd lost track of backup sandbox config, noticed "
+                    + "while handling '%s' message",
+                    server_msg.name,
+                )
+                sys.exit(1)
+            SandboxdGlobal.sandbox_state_set.remove(
+                target_flux_sandbox_state.state
+            )
+            SandboxdGlobal.backup_sandbox_state_set.remove(
+                target_backup_sandbox_state
+            )
+            SandboxdGlobal.sandbox_state_set.add(target_backup_sandbox_state)
+        self.flux_sandbox_state_set.remove(target_flux_sandbox_state)
+        self.flux_correlation_id_set.remove(
+            target_flux_sandbox_state.correlation_id
+        )
 
     ## TODO: add more server handlers here
 
@@ -1406,7 +1540,7 @@ def bool_to_yn(in_val: bool) -> str:
 
 
 def get_messages_for_sandbox_state(
-    main_correlation_id: int,
+    correlation_id: int,
     sandbox_state: SmdSandboxState,
     after_failed_config: bool,
 ) -> list[SmdCommServerMsg | SmdCommBidiMsg]:
@@ -1428,107 +1562,105 @@ def get_messages_for_sandbox_state(
             + f"'{sandbox_state.sandbox_status}'"
         )
 
-    ## Leading messages; these have to be sent before config info since that's
-    ## how these messages would be sent in other situations.
     match sandbox_state.sandbox_status:
         case SmdSandboxStatus.CONFIG:
             output_list.append(
                 SmdCommServerConfigInprogressMsg(
-                    main_correlation_id, [sandbox_state.uuid_str]
+                    correlation_id, [sandbox_state.uuid_str]
                 )
             )
         case SmdSandboxStatus.CREATE:
             output_list.append(
                 SmdCommServerCreateInprogressMsg(
-                    main_correlation_id, [sandbox_state.uuid_str]
+                    correlation_id, [sandbox_state.uuid_str]
                 )
             )
         case SmdSandboxStatus.CLONE:
             output_list.append(
                 SmdCommServerCloneInprogressMsg(
-                    main_correlation_id, [sandbox_state.uuid_str]
+                    correlation_id, [sandbox_state.uuid_str]
                 )
             )
         case _:
             pass
 
     if after_failed_config:
-        output_list.append(SmdCommServerConfigFailedMsg(main_correlation_id))
+        output_list.append(SmdCommServerConfigFailedMsg(correlation_id))
 
     output_list.append(
-        SmdCommServerConfigInfoStartMsg(
-            main_correlation_id, [sandbox_state.uuid_str]
+        SmdCommServerStateInfoStartMsg(
+            correlation_id, [sandbox_state.uuid_str]
         )
     )
     output_list.append(
-        SmdCommBidiNameMsg(main_correlation_id, [sandbox_state.name])
+        SmdCommBidiNameMsg(correlation_id, [sandbox_state.name])
     )
     output_list.append(
         SmdCommBidiDescriptionMsg(
-            main_correlation_id, [sandbox_state.description]
+            correlation_id, [sandbox_state.description]
         )
     )
     output_list.append(
         SmdCommBidiRootVolSizeMsg(
-            main_correlation_id, [str(sandbox_state.root_vol_size)]
+            correlation_id, [str(sandbox_state.root_vol_size)]
         )
     )
     output_list.append(
         SmdCommBidiDataVolSizeMsg(
-            main_correlation_id, [str(sandbox_state.data_vol_size)]
+            correlation_id, [str(sandbox_state.data_vol_size)]
         )
     )
     output_list.append(
-        SmdCommBidiMemoryMsg(main_correlation_id, [str(sandbox_state.memory)])
+        SmdCommBidiMemoryMsg(correlation_id, [str(sandbox_state.memory)])
     )
     output_list.append(
         SmdCommBidiCpuWeightMsg(
-            main_correlation_id, [str(sandbox_state.cpu_weight)]
+            correlation_id, [str(sandbox_state.cpu_weight)]
         )
     )
     # output_list.append(
-    #     SmdCommBidiCpuCoresMsg(main_correlation_id, [str(sandbox_state.cpu_cores)])
+    #     SmdCommBidiCpuCoresMsg(correlation_id, [str(sandbox_state.cpu_cores)])
     # )
     output_list.append(
         SmdCommBidiIoWeightMsg(
-            main_correlation_id, [str(sandbox_state.io_weight)]
+            correlation_id, [str(sandbox_state.io_weight)]
         )
     )
     output_list.append(
         SmdCommBidiAudioEnabledMsg(
-            main_correlation_id, [bool_to_yn(sandbox_state.audio_enabled)]
+            correlation_id, [bool_to_yn(sandbox_state.audio_enabled)]
         )
     )
     output_list.append(
         SmdCommBidiWaylandEnabledMsg(
-            main_correlation_id, [bool_to_yn(sandbox_state.wayland_enabled)]
+            correlation_id, [bool_to_yn(sandbox_state.wayland_enabled)]
         )
     )
     output_list.append(
         SmdCommBidiX11EnabledMsg(
-            main_correlation_id, [bool_to_yn(sandbox_state.x11_enabled)]
+            correlation_id, [bool_to_yn(sandbox_state.x11_enabled)]
         )
     )
     output_list.append(
         SmdCommBidi3dEnabledMsg(
-            main_correlation_id, [bool_to_yn(sandbox_state.three_d_enabled)]
+            correlation_id, [bool_to_yn(sandbox_state.three_d_enabled)]
         )
     )
     output_list.append(
         SmdCommBidiNetworkEnabledMsg(
-            main_correlation_id, [bool_to_yn(sandbox_state.network_enabled)]
+            correlation_id, [bool_to_yn(sandbox_state.network_enabled)]
         )
     )
     output_list.append(
         SmdCommBidiNestedSandboxingEnabledMsg(
-            main_correlation_id,
+            correlation_id,
             [bool_to_yn(sandbox_state.nested_sandboxing_enabled)],
         )
     )
     for fso_state in sandbox_state.shared_fso_list:
         output_list.append(
             SmdCommBidiSharedFsoMsg(
-                main_correlation_id,
+                correlation_id,
                 [
                     "RW" if fso_state.read_write else "RO",
                     fso_state.host_path,
@@ -1538,55 +1670,53 @@ def get_messages_for_sandbox_state(
         )
     for shared_device in sandbox_state.shared_device_list:
         output_list.append(
-            SmdCommBidiSharedDeviceMsg(main_correlation_id, [shared_device])
+            SmdCommBidiSharedDeviceMsg(correlation_id, [shared_device])
         )
-    output_list.append(SmdCommServerConfigInfoEndMsg(main_correlation_id))
 
-    ## Trailing messages; these are sent after config info for the same reason
-    ## leading messages are sent before. SmdSandboxStatus.SHUT_DOWN is not
-    ## handled by either the leading or trailing blocks because it doesn't need
-    ## any extra messages accompanying it.
-    new_correlation_id: int = SmdCommon.new_correlation_id()
+    ## SmdSandboxStatus.SHUT_DOWN is not handled because it doesn't need any
+    ## extra messages accompanying it.
     match sandbox_state.sandbox_status:
         case SmdSandboxStatus.BOOTING_UPDATE:
             output_list.append(
                 SmdCommServerBootInprogressMsg(
-                    new_correlation_id,
+                    correlation_id,
                     [sandbox_state.uuid_str, "update"],
                 )
             )
         case SmdSandboxStatus.BOOTING_WORK:
             output_list.append(
                 SmdCommServerBootInprogressMsg(
-                    new_correlation_id, [sandbox_state.uuid_str, "work"]
+                    correlation_id, [sandbox_state.uuid_str, "work"]
                 )
             )
         case SmdSandboxStatus.BOOTED_UPDATE:
             output_list.append(
                 SmdCommServerBootSuccessMsg(
-                    new_correlation_id, [sandbox_state.uuid_str, "update"]
+                    correlation_id, [sandbox_state.uuid_str, "update"]
                 )
             )
         case SmdSandboxStatus.BOOTED_WORK:
             output_list.append(
                 SmdCommServerBootSuccessMsg(
-                    new_correlation_id, [sandbox_state.uuid_str, "work"]
+                    correlation_id, [sandbox_state.uuid_str, "work"]
                 )
             )
         case SmdSandboxStatus.SHUTTING_DOWN:
             output_list.append(
                 SmdCommServerShutdownInprogressMsg(
-                    new_correlation_id, [sandbox_state.uuid_str]
+                    correlation_id, [sandbox_state.uuid_str]
                 )
             )
         case SmdSandboxStatus.DELETE:
             output_list.append(
                 SmdCommServerDeleteInprogressMsg(
-                    new_correlation_id, [sandbox_state.uuid_str]
+                    correlation_id, [sandbox_state.uuid_str]
                 )
             )
         case _:
             pass
+
+    output_list.append(SmdCommServerStateInfoEndMsg(correlation_id))
 
     return output_list
 
