@@ -72,7 +72,7 @@ def config_handler_main(child_pipe: Connection) -> None:
     ## root.
     os.umask(0o077)
 
-    ## Get a correlation IS from the server to use for a return message.
+    ## Get a correlation ID from the server to use for a return message.
     try:
         recv_obj: Any = child_pipe.recv()
     except EOFError:
