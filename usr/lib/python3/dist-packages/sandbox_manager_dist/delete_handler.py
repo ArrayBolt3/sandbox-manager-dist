@@ -25,6 +25,7 @@ from .protocol import (
     SmdCommServerDeleteFailedMsg,
 )
 
+
 def delete_handler_main(child_pipe: Connection) -> None:
     """
     Entry point for delete_handler.py.

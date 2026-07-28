@@ -104,6 +104,17 @@ class SmdSandboxState:
     sandbox_status: SmdSandboxStatus = SmdSandboxStatus.SHUT_DOWN
 
 
+@dataclass
+class SmdCloneOperationInfo:
+    """
+    Information about a sandbox clone operation.
+    """
+
+    user_id_numeric: int
+    source_sandbox_state: SmdSandboxState
+    target_sandbox_state: SmdSandboxState
+
+
 class SmdSocketType(Enum):
     """
     Enum for defining socket type.

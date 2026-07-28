@@ -2051,12 +2051,18 @@ interface directly.
       has been accepted and is being processed. Broadcast to long-lived
       clients.  Must be correlated to a client-sent `CLONE` message when sent
       to the provoking client, introduces a new correlation ID otherwise. Takes
-      one argument; the UUID of the cloned sandbox. Does not include a binary
-      blob.
-      * Implementation note, after sending this, but before sending one of
-        `CLONE_SUCCESS` or `CLONE_FAILED`, the backend must send
-        `STATE_INFO_START`, the new config info of the sandbox, and
-        `STATE_INFO_END`.
+      two arguments; the UUID of the sandbox being cloned, and the UUID of the
+      cloned sandbox. Does not include a binary blob.
+      * The server is expected to send information about one or both sandboxes
+        mentioned in this message very soon after having send the message
+        itself (although there is no hard time limit here), depending on which
+        sandboxes the client does or doesn't know about yet. When handling a
+        SYNC message, the handler will send all `CLONE_INPROGRESS` messages
+        before sending information about the individual sandboxes themselves,
+        so the UI can render all sandboxes in the correct state from the
+        beginning. In other contexts, the client will usually already know
+        about the source sandbox, and the server will only send information
+        about the target sandbox.
     * `CLONE_SUCCESS` - Informs the frontend that a sandbox has been
       successfully cloned. Broadcast to long-lived clients. Must be correlated
       to a `CLONE_INPROGRESS` message. Takes no arguments. Does not include a

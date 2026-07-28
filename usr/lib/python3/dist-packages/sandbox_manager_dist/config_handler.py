@@ -25,6 +25,7 @@ from .protocol import (
     SmdCommServerConfigFailedMsg,
 )
 
+
 def resize_sandbox_disk_images(
     user_sandbox_dir: Path, sandbox_state: SmdSandboxState
 ) -> None:
@@ -49,7 +50,7 @@ def resize_sandbox_disk_images(
                 ["/usr/sbin/resize2fs", "-f", "--", str(target_vol)],
                 check=True,
             )
-        elif vol_size > desired_vol_size: ## filesystem needs shrunk
+        elif vol_size > desired_vol_size:  ## filesystem needs shrunk
             subprocess.run(
                 [
                     "/usr/sbin/resize2fs",
@@ -62,6 +63,7 @@ def resize_sandbox_disk_images(
             )
             with open(target_vol, "r+b") as f:
                 f.truncate(desired_vol_size)
+
 
 def config_handler_main(child_pipe: Connection) -> None:
     """

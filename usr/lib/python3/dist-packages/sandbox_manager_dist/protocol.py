@@ -1352,7 +1352,7 @@ class SmdCommServerDeleteFailedMsg(
 class SmdCommServerCloneInprogressMsg(
     SmdCommServerMsg,
     name="CLONE_INPROGRESS",
-    arg_count=1,
+    arg_count=2,
     trailing_binary=False,
     do_broadcast=True,
 ):
@@ -1370,6 +1370,11 @@ class SmdCommServerCloneInprogressMsg(
         assert arg_list is not None
         SmdCommon.validate_id(
             arg_list[0],
+            [SmdValidateType.UUID],
+            "Cloning sandbox UUID failed validation",
+        )
+        SmdCommon.validate_id(
+            arg_list[1],
             [SmdValidateType.UUID],
             "Cloned sandbox UUID failed validation",
         )
